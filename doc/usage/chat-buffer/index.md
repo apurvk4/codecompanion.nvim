@@ -181,6 +181,7 @@ Press `gA` with the cursor on a card to list the actions available for it. The m
 - **Expand output** or **Collapse output** - show or hide the captured output
 - **Open terminal** - open the terminal buffer for a command CodeCompanion runs for the agent
 - **View command snapshot** - open a read-only snapshot for a command the agent runs itself
+- **Send to background** - let a running command finish on its own and share its output later
 - **Stop command** - terminate the command's process, when it's still running
 
 ### ACP Terminals
@@ -191,6 +192,14 @@ Commands the agent runs in its own environment have no terminal for CodeCompanio
 
 > [!IMPORTANT]
 > ACP doesn't transport files or processes. The `terminal` and `fs` capabilities assume the agent and Neovim share a machine, a filesystem and a shell. Don't use them with a remote agent
+
+### ACP Compaction
+
+An ACP agent can compact its own conversation. A _Context compaction_ card tracks each compaction, shows its status and keeps the summary the agent retains, so you can see what the agent still knows.
+
+### ACP Questions
+
+An ACP agent can stop and ask you a question. CodeCompanion shows the question as a card, then prompts for each field of the form the agent sent. A field the agent marks as required must be answered before the agent continues. Cancelling a prompt tells the agent the question was cancelled, and the turn carries on.
 
 ## Keymaps
 

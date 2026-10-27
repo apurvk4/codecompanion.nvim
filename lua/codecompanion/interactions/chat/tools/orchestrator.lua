@@ -6,9 +6,12 @@ local agent_loop = require("codecompanion.interactions.chat.agent_loop")
 
 local config = require("codecompanion.config")
 local log = require("codecompanion.utils.log")
+local markdown = require("codecompanion.utils.markdown")
 local os_utils = require("codecompanion.utils.os")
 local ui_utils = require("codecompanion.utils.ui")
 local utils = require("codecompanion.utils")
+
+local api = vim.api
 
 local fmt = string.format
 
@@ -33,18 +36,62 @@ end
 ---@param opts { cmd: table, timeout?: number }
 ---@param callback function
 ---@return vim.SystemObj
+---@return fun() stop_timeout
 local function execute_shell_command(opts, callback)
+  local timed_out = false
+  local timer
+  local job
+
+  local function stop_timeout()
+    if timer then
+      timer:stop()
+      if not timer:is_closing() then
+        timer:close()
+      end
+      timer = nil
+    end
+  end
+
+  local function finish(result)
+    stop_timeout()
+    if timed_out then
+      result.code = 124
+    end
+    callback(result)
+  end
+
   if vim.fn.has("win32") == 1 then
     -- See PR #2186
     local shell_cmd = table.concat(opts.cmd, " ") .. "\r\nEXIT %ERRORLEVEL%\r\n"
-    return vim.system({ "cmd.exe", "/Q", "/K" }, {
+    job = vim.system({ "cmd.exe", "/Q", "/K" }, {
       stdin = shell_cmd,
       env = { PROMPT = "\r\n" },
-      timeout = opts.timeout,
-    }, callback)
+    }, finish)
+  else
+    job = vim.system(os_utils.build_shell_command(opts.cmd), {}, finish)
   end
 
-  return vim.system(os_utils.build_shell_command(opts.cmd), { timeout = opts.timeout }, callback)
+  -- The timeout is owned here rather than by vim.system so that a backgrounded
+  -- command can outlive it
+  if opts.timeout and opts.timeout > 0 then
+    timer = vim.uv.new_timer()
+    timer:start(opts.timeout, 0, function()
+      timed_out = true
+      pcall(function()
+        job:kill("sigterm")
+      end)
+    end)
+  end
+
+  return job, stop_timeout
+end
+
+---Is backgrounding allowed for this tool?
+---@param tool CodeCompanion.Tools.Tool
+---@return boolean
+local function background_enabled(tool)
+  local background = tool.opts and tool.opts.background
+  return type(background) == "table" and background.enabled ~= false
 end
 
 ---Converts a cmd-based tool to a function-based tool.
@@ -71,8 +118,16 @@ local function cmd_to_func_tool(opts)
       ---@param tools CodeCompanion.Tools
       return function(tools, _, tool_opts)
         local cb = vim.schedule_wrap(tool_opts.output_cb)
-        local job = execute_shell_command({ cmd = cmd, timeout = timeout }, function(out)
+        local running_job
+        local job, stop_timeout = execute_shell_command({ cmd = cmd, timeout = timeout }, function(out)
+          if running_job and orchestrator.background_job == running_job then
+            return vim.schedule(function()
+              orchestrator:deliver_background_output(out)
+            end)
+          end
+
           orchestrator.current_job = nil
+          orchestrator.stop_timeout = nil
 
           if flag then
             tools.chat.tool_registry.flags = tools.chat.tool_registry.flags or {}
@@ -102,8 +157,21 @@ local function cmd_to_func_tool(opts)
         end)
 
         orchestrator.current_job = job
+        orchestrator.stop_timeout = stop_timeout
+        running_job = job
+
         if orchestrator.tool_label then
           Activity.attach_job(tools.chat, orchestrator.tool_label.id, job)
+          if background_enabled(tool) then
+            Activity.attach_background(tools.chat, orchestrator.tool_label.id, {
+              on_background = function()
+                return orchestrator:background(tool)
+              end,
+              on_stop = function()
+                orchestrator:stop_background()
+              end,
+            })
+          end
         end
       end
     end)
@@ -125,6 +193,15 @@ end
 ---@field tool_label { id: string, text: string, status: string }? The activity card for the running tool
 ---@field tool_output table? The output collected from the tool
 ---@field tools CodeCompanion.Tools
+---@field backgrounded boolean Whether the running tool was sent to the background
+---@field background_job vim.SystemObj? The process left running in the background
+---@field background_card string? The activity card that owns the background process
+---@field background_command string? The command left running in the background
+---@field background_auto_submit boolean Whether to submit when a background command finishes
+---@field background_stopped boolean Whether the user stopped the background command
+---@field background_delivered boolean Whether the background output was already shared
+---@field resolve_current fun(msg: table)? Resolver for the running tool
+---@field stop_timeout fun()? Cancels the running command's timeout timer
 local Orchestrator = {}
 
 ---@param tools CodeCompanion.Tools
@@ -352,11 +429,127 @@ function Orchestrator:_label_completed()
     status = "error"
   end
 
+  local background = self.backgrounded and not self.background_delivered and not self.background_stopped
+  if background then
+    status = "running"
+    self.backgrounded = false
+  end
+
   Activity.upsert(self.tools.chat, {
     id = label.id,
     status = status,
     output = self:_captured_output(),
+    background = background,
   })
+end
+
+---Resolve the running tool and leave its process running in the background
+---@param tool CodeCompanion.Tools.Tool
+---@return boolean
+function Orchestrator:background(tool)
+  if self.backgrounded or self.background_job or self.cancelled then
+    return false
+  end
+
+  local resolve = self.resolve_current
+  local card_id = self.tool_label and self.tool_label.id
+  local job = self.current_job
+  if not resolve or not card_id or not job then
+    return false
+  end
+
+  self.backgrounded = true
+  self.background_job = job
+  self.background_card = card_id
+  self.background_command = self.output.cmd_string() or tool.name
+  self.background_auto_submit = (tool.opts and tool.opts.background and tool.opts.background.auto_submit) == true
+
+  if self.stop_timeout then
+    self.stop_timeout()
+    self.stop_timeout = nil
+  end
+
+  resolve({
+    status = "success",
+    data = {
+      fmt(
+        "The `%s` command is running in the background. Its output will be shared when it finishes.",
+        self.background_command
+      ),
+    },
+  })
+
+  return true
+end
+
+---Stop a backgrounded command, or the running tool when nothing is backgrounded
+---@return nil
+function Orchestrator:stop_background()
+  if not self.background_job then
+    return self:cancel()
+  end
+  if self.background_stopped then
+    return
+  end
+
+  self.background_stopped = true
+  if self.stop_timeout then
+    self.stop_timeout()
+    self.stop_timeout = nil
+  end
+
+  pcall(function()
+    self.background_job:kill("sigterm")
+  end)
+end
+
+---Share a backgrounded command's output with the user and the LLM
+---@param out table Result from vim.system
+---@return nil
+function Orchestrator:deliver_background_output(out)
+  local chat = self.tools.chat
+  local id = self.background_card
+  if self.background_delivered or not id then
+    return
+  end
+  self.background_delivered = true
+  self.background_job = nil
+  self.current_job = nil
+
+  local stopped = self.background_stopped
+  local status = stopped and "cancelled" or (out.code == 0 and "success" or "error")
+
+  local eol_pattern = vim.fn.has("win32") == 1 and "\r?\n" or "\n"
+  local output = {}
+  if out.stdout and out.stdout ~= "" then
+    vim.list_extend(output, strip_ansi(vim.split(out.stdout, eol_pattern, { trimempty = true })))
+  end
+  if out.code ~= 0 and out.stderr and out.stderr ~= "" then
+    vim.list_extend(output, strip_ansi(vim.split(out.stderr, eol_pattern, { trimempty = true })))
+  end
+
+  if api.nvim_buf_is_valid(chat.bufnr) then
+    Activity.complete_background(chat, id, { status = status, output = output })
+  end
+
+  if stopped then
+    return
+  end
+
+  local content = fmt("The background command `%s` finished with exit code %d.", self.background_command, out.code or 0)
+  if #output > 0 then
+    content = content .. "\n\n" .. markdown.form_codeblock(table.concat(output, "\n"), { ft = "txt" })
+  end
+
+  chat:add_message({ role = config.constants.USER_ROLE, content = content })
+  if api.nvim_buf_is_valid(chat.bufnr) then
+    chat:add_buf_message({ role = config.constants.USER_ROLE, content = content })
+  end
+  utils.notify(fmt("Background command `%s` finished", self.background_command), vim.log.levels.INFO)
+
+  if self.background_auto_submit and not chat.current_request and api.nvim_buf_is_valid(chat.bufnr) then
+    chat:submit({ auto_submit = true })
+  end
 end
 
 ---When the tools coordinator is finished, finalize it via an autocmd
@@ -576,11 +769,23 @@ function Orchestrator:cancel()
   end
   self.cancelled = true
 
+  if self.stop_timeout then
+    self.stop_timeout()
+    self.stop_timeout = nil
+  end
+
   if self.current_job then
     pcall(function()
       self.current_job:kill("sigterm")
     end)
     self.current_job = nil
+  end
+
+  if self.background_job then
+    self.background_stopped = true
+    pcall(function()
+      self.background_job:kill("sigterm")
+    end)
   end
 
   if self.tool then

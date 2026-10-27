@@ -238,6 +238,17 @@ function PromptBuilder:handle_permission_request(id, params)
   end
 end
 
+---Attach the session's context metrics to the event payload
+---@return table
+function PromptBuilder:_event_options()
+  local chat = self.connection.chat
+  if chat then
+    self.options.tokens = chat.tokens
+    self.options.context_size = chat.context_size
+  end
+  return self.options
+end
+
 ---Handle errors from the agent
 ---@param error string|table The error message
 function PromptBuilder:handle_error(error)
@@ -254,7 +265,7 @@ function PromptBuilder:handle_error(error)
   if self.options and not self.options.silent then
     self.options.status = "error"
     self.options.error = error_msg
-    utils.fire("RequestFinished", self.options)
+    utils.fire("RequestFinished", self:_event_options())
   end
 
   self.connection._active_prompt = nil
@@ -288,7 +299,7 @@ function PromptBuilder:handle_done(stop_reason)
   end
   if self.options and not self.options.silent then
     self.options.status = status
-    utils.fire("RequestFinished", self.options)
+    utils.fire("RequestFinished", self:_event_options())
   end
   self.connection._active_prompt = nil
 end
@@ -303,12 +314,15 @@ function PromptBuilder:cancel()
     )
     if self.options and not self.options.silent then
       self.options.status = "cancelled"
-      utils.fire("RequestFinished", self.options)
+      utils.fire("RequestFinished", self:_event_options())
     end
   end
 
   -- Handler MUST respond to all requests with "cancelled"
   -- Ref: https://agentclientprotocol.com/protocol/prompt-turn#cancellation
+  if self.connection.cancel_pending_elicitations then
+    self.connection:cancel_pending_elicitations()
+  end
   if self.handlers.cancel then
     pcall(self.handlers.cancel)
   end

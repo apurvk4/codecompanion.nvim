@@ -9,6 +9,8 @@ return {
   SESSION_REQUEST_PERMISSION = "session/request_permission",
   SESSION_SET_CONFIG_OPTION = "session/set_config_option",
   SESSION_UPDATE = "session/update",
+  ELICITATION_CREATE = "elicitation/create",
+  ELICITATION_COMPLETE = "elicitation/complete",
   FS_READ_TEXT_FILE = "fs/read_text_file",
   FS_WRITE_TEXT_FILE = "fs/write_text_file",
   TERMINAL_CREATE = "terminal/create",

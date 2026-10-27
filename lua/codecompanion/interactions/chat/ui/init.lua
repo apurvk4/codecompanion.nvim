@@ -589,7 +589,7 @@ function UI:last()
 end
 
 ---Display the tokens in the chat buffer
----@param args { parser: table, start_row: number, tokens?: number|table }
+---@param args { parser: table, start_row: number, tokens: number, context_size?: number }
 ---@return nil
 function UI:display_tokens(args)
   -- NOTE: Not handling token tables yet
@@ -604,7 +604,7 @@ function UI:display_tokens(args)
       ns_id = CONSTANTS.NS_TOKENS,
       parser = args.parser,
       start_row = args.start_row,
-      token_str = formatter(args.tokens, self.adapter),
+      token_str = formatter(args.tokens, self.adapter, args.context_size),
     })
   end
 end

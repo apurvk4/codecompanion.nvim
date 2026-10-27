@@ -87,7 +87,11 @@ function Runner:run_tool(tool_cmd, action, args)
       return
     end
     tool_finished = true
-    self.orchestrator.current_job = nil
+    self.orchestrator.resolve_current = nil
+    if not self.orchestrator.backgrounded then
+      self.orchestrator.current_job = nil
+      self.orchestrator.stop_timeout = nil
+    end
     if msg.status == self.orchestrator.tools.constants.STATUS_ERROR then
       self.orchestrator:error({ action = action, error = msg.data or "An error occurred" })
       return
@@ -102,6 +106,7 @@ function Runner:run_tool(tool_cmd, action, args)
 
   -- Set the current tool on the Tools object so tool functions can access the correct opts
   self.orchestrator.tools.tool = self.orchestrator.tool
+  self.orchestrator.resolve_current = output_handler
 
   local ok, output = pcall(function()
     return tool_cmd(self.orchestrator.tools, action, {

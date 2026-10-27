@@ -339,7 +339,7 @@ end
 
 ---Add or update an activity card
 ---@param chat CodeCompanion.Chat
----@param opts { id?: string, title?: string, status?: string, output?: any, parent_id?: string, kind?: string, external?: boolean, job?: vim.SystemObj, terminal_bufnr?: number, terminal_id?: string, on_stop?: fun(), on_background?: fun() }
+---@param opts { id?: string, title?: string, status?: string, output?: any, parent_id?: string, kind?: string, external?: boolean, job?: vim.SystemObj, terminal_bufnr?: number, terminal_id?: string, on_stop?: fun(), on_background?: fun(), background?: boolean, expand?: boolean }
 ---@return CodeCompanion.Chat.UI.ActivityCard
 function M.upsert(chat, opts)
   opts = opts or {}
@@ -421,12 +421,19 @@ function M.upsert(chat, opts)
     if opts.external ~= nil then
       card.external = opts.external
     end
+    if opts.background ~= nil then
+      card.background = opts.background
+    end
     if opts.kind then
       card.kind = opts.kind
     end
     if opts.status then
       set_status(card, opts.status)
     end
+  end
+
+  if opts.expand and not card.user_toggled then
+    card.expanded = true
   end
 
   if opts.output ~= nil then
@@ -448,6 +455,40 @@ function M.attach_job(chat, id, job)
     return
   end
   card.job = job
+  render(chat, card)
+end
+
+---Allow a running card to be sent to the background and stopped
+---@param chat CodeCompanion.Chat
+---@param id string
+---@param opts { on_background: fun(): boolean, on_stop: fun() }
+---@return nil
+function M.attach_background(chat, id, opts)
+  local card = M.get(chat, id)
+  if not card then
+    return
+  end
+  card.on_background = opts.on_background
+  card.on_stop = opts.on_stop
+  render(chat, card)
+end
+
+---Finish a backgrounded command, keeping its output on the card
+---@param chat CodeCompanion.Chat
+---@param id string
+---@param opts { status: string, output?: any }
+---@return nil
+function M.complete_background(chat, id, opts)
+  local card = M.get(chat, id)
+  if not card then
+    return
+  end
+  card.job = nil
+  card.background = false
+  if opts.output ~= nil then
+    card.output, card.output_truncated = normalise_output(opts.output)
+  end
+  set_status(card, opts.status)
   render(chat, card)
 end
 
@@ -500,7 +541,9 @@ function M.background(chat, id)
     return false
   end
 
-  card.on_background()
+  if card.on_background() == false then
+    return false
+  end
   card.background = true
   render(chat, card)
   return true
@@ -776,6 +819,11 @@ function M.cleanup(bufnr)
   local state = registry[bufnr]
   if state then
     for _, card in pairs(state.cards) do
+      if card.job then
+        pcall(function()
+          card.job:kill("sigterm")
+        end)
+      end
       if card.snapshot_bufnr and api.nvim_buf_is_valid(card.snapshot_bufnr) then
         pcall(api.nvim_buf_delete, card.snapshot_bufnr, { force = true })
       end

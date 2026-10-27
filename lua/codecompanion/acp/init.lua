@@ -107,6 +107,7 @@ function Connection.new(args)
     _in_flight = {},
     _initialized = false,
     _pending_callbacks = {},
+    _pending_elicitations = {},
     _session_config_options = {},
     _state = { handle = nil, id_gen = jsonrpc.IdGenerator.new(), line_buffer = jsonrpc.LineBuffer.new() },
   }, { __index = Connection }) ---@cast self CodeCompanion.ACP.Connection
@@ -612,8 +613,11 @@ function Connection:prepare_adapter()
   adapter = adapter_utils.get_env_vars(adapter, { timeout = config.adapters.opts.cmd_timeout })
   adapter.parameters = adapter_utils.set_env_vars(adapter, adapter.parameters)
   adapter.parameters = adapter.parameters or {}
-  adapter.parameters.clientCapabilities =
-    vim.tbl_deep_extend("keep", adapter.parameters.clientCapabilities or {}, { terminal = true })
+  adapter.parameters.clientCapabilities = vim.tbl_deep_extend("keep", adapter.parameters.clientCapabilities or {}, {
+    terminal = true,
+    session = { compaction = vim.empty_dict() },
+    elicitation = { form = vim.empty_dict() },
+  })
   adapter.defaults.auth_method = adapter_utils.set_env_vars(adapter, adapter.defaults.auth_method)
   adapter.defaults.mcpServers = adapter_utils.set_env_vars(adapter, adapter.defaults.mcpServers)
   adapter.command = adapter_utils.set_env_vars(adapter, adapter.commands.selected or adapter.commands.default)
@@ -624,6 +628,7 @@ end
 ---Disconnect and clean up the ACP process
 ---@return nil
 function Connection:disconnect()
+  self:cancel_pending_elicitations()
   if self.chat then
     require("codecompanion.interactions.chat.terminal").release_for_owner(self.chat.id)
   end
@@ -734,13 +739,27 @@ local DISPATCH = {
       if chat and m.params.update.title and type(m.params.update.title) == "string" then
         chat:set_title(m.params.update.title)
       end
-    elseif m.params.update and m.params.update.sessionUpdate == "usage_update" then
+    elseif
+      m.params.update
+      and (m.params.update.sessionUpdate == "usage_update" or m.params.update.sessionUpdate == "context_state")
+    then
       local chat = self:get_chat(m.params.sessionId)
-      if chat and m.params.update.used then
-        chat.tokens = m.params.update.used
+      if chat then
+        require("codecompanion.interactions.chat.acp.metrics").sync(chat, m.params.update)
       end
     elseif self._loading_session and self._on_session_update then
       self._on_session_update(m.params.update)
+    elseif
+      m.params.update
+      and (
+        m.params.update.sessionUpdate == "compaction_update"
+        or m.params.update.sessionUpdate == "compaction_summary_chunk"
+      )
+    then
+      local chat = self:get_chat(m.params.sessionId)
+      if chat then
+        require("codecompanion.interactions.chat.acp.compaction").handle(chat, m.params.update)
+      end
     elseif self._active_prompt then
       self._active_prompt:handle_session_update(m.params.update)
     end
@@ -770,6 +789,9 @@ local DISPATCH = {
   end,
   [METHODS.TERMINAL_RELEASE] = function(self, m)
     self:handle_terminal_release(m.id, m.params)
+  end,
+  [METHODS.ELICITATION_CREATE] = function(self, m)
+    self:handle_elicitation_create(m.id, m.params)
   end,
 }
 
@@ -1165,7 +1187,54 @@ function Connection:handle_terminal_release(id, params)
   self:send_result(id, vim.NIL)
 end
 
----Handle available_commands_update (Slash Commands)
+---Ask the user to answer a form the agent is blocked on
+---@param id number
+---@param params table
+---@return nil
+function Connection:handle_elicitation_create(id, params)
+  if not id or type(params) ~= "table" then
+    return
+  end
+
+  if params.sessionId and not self:_has_valid_session_id(params) then
+    return self:send_error(id, "invalid sessionId for elicitation/create", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  if params.mode ~= "form" then
+    return self:send_error(id, "only form elicitations are supported", jsonrpc.errors.METHOD_NOT_FOUND)
+  end
+
+  local settled = false
+  local function respond(response)
+    if settled then
+      return
+    end
+    settled = true
+    self._pending_elicitations[id] = nil
+    self:send_result(id, response)
+  end
+
+  self._pending_elicitations[id] = function()
+    respond({ action = "cancel" })
+  end
+
+  require("codecompanion.interactions.chat.acp.elicitation").request(self:get_chat(params.sessionId), {
+    id = id,
+    params = params,
+    respond = respond,
+  })
+end
+
+---Cancel every elicitation still waiting on the user
+---@return nil
+function Connection:cancel_pending_elicitations()
+  local pending = self._pending_elicitations or {}
+  self._pending_elicitations = {}
+  for _, cancel in pairs(pending) do
+    pcall(cancel)
+  end
+end
+
 ---Ref: https://agentclientprotocol.com/protocol/slash-commands
 ---@param session_id string
 ---@param commands ACP.availableCommands
@@ -1230,6 +1299,8 @@ end
 ---@param signal number
 function Connection:handle_process_exit(code, signal)
   log:debug("[acp] Process exited (code=%s, signal=%s)", code, signal)
+
+  self:cancel_pending_elicitations()
 
   if self.adapter_modified then
     acp_adapter.call_handler(self.adapter_modified, "on_exit", { code = code })

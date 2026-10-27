@@ -49,6 +49,8 @@ function M.restore_session(chat, updates)
       end
     elseif kind == "tool_call" or kind == "tool_call_update" then
       process_user_chunks()
+    elseif kind == "compaction_update" or kind == "compaction_summary_chunk" then
+      require("codecompanion.interactions.chat.acp.compaction").handle(chat, update)
     end
   end
 

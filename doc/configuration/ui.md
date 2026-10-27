@@ -188,11 +188,17 @@ require("codecompanion").setup({
 
       ---@param tokens number
       ---@param adapter CodeCompanion.HTTPAdapter|CodeCompanion.ACPAdapter
+      ---@param context_size? number
       ---@return string
-      token_count = function(tokens, adapter)
+      token_count = function(tokens, adapter, context_size)
+        if context_size and context_size > 0 then
+          return (" (%d/%d tokens)"):format(tokens, context_size)
+        end
         return " (" .. tokens .. " tokens)"
       end,
     },
   },
 })
 ```
+
+An ACP agent that reports its context window gets the used and total token counts, such as `(1200/200000 tokens)`. The third argument is `nil` when the adapter doesn't report a window.

@@ -3595,6 +3595,7 @@ menu only offers an action when CodeCompanion holds a real handle for it:
 - **Expand output** or **Collapse output** - show or hide the captured output
 - **Open terminal** - open the terminal buffer for a command CodeCompanion runs for the agent
 - **View command snapshot** - open a read-only snapshot for a command the agent runs itself
+- **Send to background** - let a running command finish on its own and share its output later
 - **Stop command** - terminate the command's process, when it's still running
 
 
@@ -3615,6 +3616,21 @@ output the agent reported.
   [!IMPORTANT] ACP doesn't transport files or processes. The `terminal` and `fs`
   capabilities assume the agent and Neovim share a machine, a filesystem and a
   shell. Don't use them with a remote agent
+
+ACP COMPACTION
+
+An ACP agent can compact its own conversation. A `Context compaction` card
+tracks each compaction, shows its status and keeps the summary the agent
+retains, so you can see what the agent still knows.
+
+
+ACP QUESTIONS
+
+An ACP agent can stop and ask you a question. CodeCompanion shows the question
+as a card, then prompts for each field of the form the agent sent. A field the
+agent marks as required must be answered before the agent continues. Cancelling
+a prompt tells the agent the question was cancelled, and the turn carries on.
+
 
 KEYMAPS ~
 
@@ -4244,22 +4260,50 @@ The LLM is instructed to flag a command that runs a test suite. CodeCompanion
 then records whether the tests passed as a flag on the chat buffer, which
 |codecompanion-extending-agentic-workflows| can hook into.
 
-  -----------------------------------------------------------------------------------------
-  Option                    Default                         Description
-  ------------------------- ------------------------------- -------------------------------
-  judge                     false                           Let the
-                                                            configuration-tools-llm-judge
-                                                            decide in Auto mode
+  ---------------------------------------------------------------------------------------------------
+  Option                    Default                                   Description
+  ------------------------- ----------------------------------------- -------------------------------
+  judge                     false                                     Let the
+                                                                      configuration-tools-llm-judge
+                                                                      decide in Auto mode
 
-  require_approval_before   true                            Require approval before running
-                                                            a command
+  require_approval_before   true                                      Require approval before running
+                                                                      a command
 
-  safe_commands             { "git status", "ls", "pwd" }   Commands that run without
-                                                            asking in Auto mode
+  safe_commands             { "git status", "ls", "pwd" }             Commands that run without
+                                                                      asking in Auto mode
 
-  timeout                   300000                          Milliseconds before a command
-                                                            is terminated
-  -----------------------------------------------------------------------------------------
+  timeout                   300000                                    Milliseconds before a command
+                                                                      is terminated
+
+  background                { enabled = true, auto_submit = false }   Let you send a running command
+                                                                      to the background
+  ---------------------------------------------------------------------------------------------------
+A long command can be sent to the background from its
+|codecompanion-usage-chat-buffer-running-activity|. The tool returns straight
+away so the agent carries on, and CodeCompanion adds the command's output to
+the chat when it finishes. A backgrounded command isn't bound by `timeout`. To
+stop one, use Stop command on its card.
+
+>lua
+    require("codecompanion").setup({
+      interactions = {
+        chat = {
+          tools = {
+            ["run_command"] = {
+              opts = {
+                background = {
+                  enabled = true, -- Offer Send to background on a running command
+                  auto_submit = false, -- Send the output to the LLM as soon as the command finishes
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+<
+
 
 SEARCH_HELP
 
@@ -8994,14 +9038,22 @@ The remaining options, with their defaults:
     
           ---@param tokens number
           ---@param adapter CodeCompanion.HTTPAdapter|CodeCompanion.ACPAdapter
+          ---@param context_size? number
           ---@return string
-          token_count = function(tokens, adapter)
+          token_count = function(tokens, adapter, context_size)
+            if context_size and context_size > 0 then
+              return (" (%d/%d tokens)"):format(tokens, context_size)
+            end
             return " (" .. tokens .. " tokens)"
           end,
         },
       },
     })
 <
+
+An ACP agent that reports its context window gets the used and total token
+counts, such as `(1200/200000 tokens)`. The third argument is `nil` when the
+adapter doesn't report a window.
 
 
 CLI                                          *codecompanion-configuration-cli*

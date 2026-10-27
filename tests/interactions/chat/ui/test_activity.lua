@@ -409,4 +409,84 @@ T["Activity cards"]["attributes output to the chat and card that produced it"] =
   h.eq({ "second output" }, result.second)
 end
 
+T["Activity cards"]["leaves a card running when the tool refuses to background"] = function()
+  local result = child.lua([[
+    local card = _G.Activity.upsert(_G.chat, {
+      id = "command",
+      title = "run_command: make test",
+      status = "running",
+      job = { kill = function() end },
+      on_background = function()
+        return false
+      end,
+    })
+
+    local backgrounded = _G.Activity.background(_G.chat, "command")
+
+    return { backgrounded = backgrounded, background = card.background, status = card.status }
+  ]])
+
+  h.is_false(result.backgrounded)
+  h.is_false(result.background)
+  h.eq("running", result.status)
+end
+
+T["Activity cards"]["finishes a background command and keeps its output"] = function()
+  local result = child.lua([[
+    local card = _G.Activity.upsert(_G.chat, {
+      id = "command",
+      title = "run_command: make test",
+      status = "running",
+      job = { kill = function() end },
+      background = true,
+    })
+
+    _G.Activity.complete_background(_G.chat, "command", {
+      status = "success",
+      output = { "all tests passed" },
+    })
+
+    local actions = vim.tbl_map(function(action)
+      return action.label
+    end, _G.Activity.actions_for(card, _G.chat))
+
+    return {
+      status = card.status,
+      background = card.background,
+      job = card.job,
+      output = card.output,
+      actions = actions,
+    }
+  ]])
+
+  h.eq("success", result.status)
+  h.is_false(result.background)
+  h.eq(nil, result.job)
+  h.eq({ "all tests passed" }, result.output)
+  h.is_false(vim.tbl_contains(result.actions, "Stop command"))
+  h.is_false(vim.tbl_contains(result.actions, "Send to background"))
+end
+
+T["Activity cards"]["kills a running command when the buffer is cleaned up"] = function()
+  local result = child.lua([[
+    local killed = false
+    _G.Activity.upsert(_G.chat, {
+      id = "command",
+      title = "run_command: sleep 100",
+      status = "running",
+      job = {
+        kill = function()
+          killed = true
+        end,
+      },
+    })
+
+    _G.Activity.cleanup(_G.chat.bufnr)
+    return { killed = killed, cards = #_G.Activity.cards(_G.chat) }
+  ]])
+
+  h.is_true(result.killed)
+  h.eq(0, result.cards)
+end
+
 return T

@@ -11,6 +11,7 @@
 ---@field builder CodeCompanion.Chat.UI.Builder The UI builder for the chat buffer
 ---@field callbacks table<string, (fun(chat: CodeCompanion.Chat, ...: any): any)[]> A table of callback functions that are executed at various points (on_created, on_before_submit, on_submitted, on_tool_output, on_ready, on_completed, on_cancelled, on_closed)
 ---@field context CodeCompanion.Chat.Context
+---@field context_size? number The context window the agent reports for this session
 ---@field context_items? table<CodeCompanion.Chat.Context> Context which is sent to the LLM e.g. buffers, slash command output
 ---@field composer? { bufnr: number, winnr: number } The bottom prompt composer window
 ---@field current_request table|nil The current request being executed
@@ -832,6 +833,7 @@ function Chat:change_adapter(args)
   self.acp_connection = nil
   self._acp_name_map_cache = nil
   self.adapter = new_adapter
+  self.context_size = nil
   self.ui.adapter = self.adapter
 
   if self.adapter.type == "acp" then
@@ -1963,6 +1965,23 @@ function Chat:add_tool_output(tool, opts)
   end
 end
 
+---Refresh the token count shown in the chat buffer
+---@return nil
+function Chat:refresh_token_count()
+  if not api.nvim_buf_is_valid(self.bufnr) then
+    return
+  end
+  if type(self.header_line) ~= "number" or self.header_line < 1 then
+    return
+  end
+  self.ui:display_tokens({
+    parser = self.parsers.markdown,
+    start_row = self.header_line,
+    tokens = self.tokens,
+    context_size = self.context_size,
+  })
+end
+
 ---Ready the chat buffer for the next round of conversation
 ---@param opts? { auto_submit?: boolean }
 ---@return nil
@@ -1974,7 +1993,7 @@ function Chat:ready_for_input(opts)
     self:add_buf_message({ role = config.constants.USER_ROLE, content = "" })
 
     self.header_line = (self.builder.state.current_header_line or 0) + 1
-    self.ui:display_tokens({ parser = self.parsers.markdown, start_row = self.header_line, tokens = self.tokens })
+    self:refresh_token_count()
     self.context:render()
 
     self:dispatch("on_ready")

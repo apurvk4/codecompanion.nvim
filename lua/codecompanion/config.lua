@@ -301,6 +301,10 @@ The user is working on a %s machine. Please respond with system specific command
             require_cmd_approval = true,
             safe_commands = { "git status", "ls", "pwd" }, -- Commands which run without asking in auto mode
             timeout = 300000, -- Timeout for commands (milliseconds) - 5 mins by default
+            background = {
+              enabled = true, -- Allow the user to send a running command to the background
+              auto_submit = false, -- Share the output with the LLM as soon as the command finishes
+            },
           },
         },
         ["search_help"] = {
@@ -1464,8 +1468,12 @@ The user is working on a %s machine. Please respond with system specific command
       ---The function to display the token count
       ---@param tokens number
       ---@param adapter CodeCompanion.HTTPAdapter|CodeCompanion.ACPAdapter
+      ---@param context_size? number The context window the adapter reports
       ---@return string
-      token_count = function(tokens, adapter) -- The function to display the token count
+      token_count = function(tokens, adapter, context_size) -- The function to display the token count
+        if context_size and context_size > 0 then
+          return (" (%d/%d tokens)"):format(tokens, context_size)
+        end
         return " (" .. tokens .. " tokens)"
       end,
     },

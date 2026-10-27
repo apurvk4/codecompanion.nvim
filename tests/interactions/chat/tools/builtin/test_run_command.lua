@@ -114,6 +114,152 @@ T["stopping the chat kills a running command"] = function()
   h.expect_contains("cancelled", child.lua_get("chat.messages[#chat.messages].content"))
 end
 
+T["sends a running command to the background and shares its output when it finishes"] = function()
+  if vim.fn.has("win32") == 1 then
+    MiniTest.skip("`sleep` isn't available on Windows")
+  end
+
+  child.lua([[
+    local tool = {
+      {
+        ["function"] = {
+          name = "run_command",
+          arguments = '{"cmd": "sleep 0.3 && echo background-done"}',
+        },
+      },
+    }
+    tools:execute(chat, tool)
+
+    _G.started = vim.wait(5000, function()
+      return chat.tool_orchestrator ~= nil and chat.tool_orchestrator.current_job ~= nil
+    end, 25)
+
+    local Activity = require("codecompanion.interactions.chat.ui.activity")
+    local card = Activity.cards(chat)[1]
+    _G.card_id = card.id
+
+    _G.backgrounded = Activity.background(chat, card.id)
+    _G.card_after_background = { status = card.status, background = card.background }
+
+    _G.delivered = vim.wait(5000, function()
+      return #chat.messages > 2
+    end, 25)
+  ]])
+
+  h.eq(true, child.lua_get("_G.started"))
+  h.eq(true, child.lua_get("_G.backgrounded"))
+  h.eq("running", child.lua_get("_G.card_after_background.status"))
+  h.eq(true, child.lua_get("_G.card_after_background.background"))
+  h.eq(true, child.lua_get("_G.delivered"))
+
+  local messages = child.lua_get([[
+    table.concat(vim.tbl_map(function(m)
+      return type(m.content) == "string" and m.content or ""
+    end, chat.messages), "\n")
+  ]])
+  h.expect_contains("running in the background", messages)
+  h.expect_contains("background-done", messages)
+
+  local card = child.lua_get([[
+    (function()
+      local c = require("codecompanion.interactions.chat.ui.activity").get(chat, _G.card_id)
+      return { status = c.status, background = c.background, job = c.job }
+    end)()
+  ]])
+  h.eq("success", card.status)
+  h.is_false(card.background)
+  h.eq(nil, card.job)
+end
+
+T["stops a backgrounded command without sharing its output"] = function()
+  if vim.fn.has("win32") == 1 then
+    MiniTest.skip("`sleep` isn't available on Windows")
+  end
+
+  child.lua([[
+    _G.marker = vim.fn.tempname()
+
+    local tool = {
+      {
+        ["function"] = {
+          name = "run_command",
+          arguments = string.format('{"cmd": "sleep 1 && touch %s"}', _G.marker),
+        },
+      },
+    }
+    tools:execute(chat, tool)
+
+    vim.wait(5000, function()
+      return chat.tool_orchestrator ~= nil and chat.tool_orchestrator.current_job ~= nil
+    end, 25)
+
+    local Activity = require("codecompanion.interactions.chat.ui.activity")
+    local card = Activity.cards(chat)[1]
+    _G.card_id = card.id
+    Activity.background(chat, card.id)
+    _G.message_count = #chat.messages
+
+    Activity.stop(chat, card.id)
+    _G.stopped = vim.wait(5000, function()
+      return card.status == "cancelled"
+    end, 25)
+
+    -- Outlive the command so the marker would exist had it survived the stop
+    vim.wait(1500)
+  ]])
+
+  h.eq(true, child.lua_get("_G.stopped"))
+  h.eq(child.lua_get("_G.message_count"), child.lua_get("#chat.messages"))
+  h.eq(0, child.lua_get("vim.fn.filereadable(_G.marker)"))
+end
+
+T["does not offer backgrounding when the tool disables it"] = function()
+  if vim.fn.has("win32") == 1 then
+    MiniTest.skip("`sleep` isn't available on Windows")
+  end
+
+  child.lua([[
+    local cfg = {
+      interactions = {
+        chat = {
+          tools = {
+            run_command = { opts = { background = { enabled = false } } }
+          }
+        }
+      }
+    }
+    chat, tools = h.setup_chat_buffer(cfg)
+
+    local tool = {
+      {
+        ["function"] = {
+          name = "run_command",
+          arguments = '{"cmd": "sleep 1"}',
+        },
+      },
+    }
+    tools:execute(chat, tool)
+
+    vim.wait(5000, function()
+      return chat.tool_orchestrator ~= nil and chat.tool_orchestrator.current_job ~= nil
+    end, 25)
+
+    local Activity = require("codecompanion.interactions.chat.ui.activity")
+    local card = Activity.cards(chat)[1]
+    _G.actions = vim.tbl_map(function(action)
+      return action.label
+    end, Activity.actions_for(card, chat))
+
+    chat:stop()
+    vim.wait(5000, function()
+      return #chat.messages > 1
+    end, 25)
+  ]])
+
+  h.is_false(vim.tbl_contains(child.lua_get("_G.actions"), "Send to background"))
+  h.is_true(vim.tbl_contains(child.lua_get("_G.actions"), "Stop command"))
+end
+
 T["Windows"] = new_set()
 
 T["Windows"]["run_command handles Windows pipe command with empty string argument"] = function()

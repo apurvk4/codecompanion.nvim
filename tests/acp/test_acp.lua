@@ -1049,12 +1049,140 @@ T["ACP Responses"]["advertises the terminal capability unless an adapter overrid
       terminal = adapter.parameters.clientCapabilities.terminal,
       fs_read = adapter.parameters.clientCapabilities.fs.readTextFile,
       overridden = overridden.parameters.clientCapabilities.terminal,
+      encoded = vim.json.encode(adapter.parameters.clientCapabilities),
     }
   ]])
 
   h.is_true(result.terminal)
   h.is_true(result.fs_read)
   h.is_false(result.overridden)
+  h.expect_contains('"session":{"compaction":{}}', result.encoded)
+  h.expect_contains('"elicitation":{"form":{}}', result.encoded)
+end
+
+T["ACP Responses"]["asks the user for an elicitation form and returns the answers"] = function()
+  local result = child.lua([[
+    local connection = create_test_connection()
+    connection.session_id = "s1"
+    connection._state.handle = { write = function() end }
+
+    _G.sent = {}
+    function connection:send_result(id, response)
+      table.insert(_G.sent, { id = id, response = response })
+    end
+    function connection:send_error(id, message)
+      table.insert(_G.sent, { id = id, error = message })
+    end
+
+    vim.ui.input = function(opts, callback)
+      callback(opts.prompt:find("Name", 1, true) and "Apurv" or nil)
+    end
+
+    connection:handle_elicitation_create(7, {
+      sessionId = "s1",
+      mode = "form",
+      message = "Who is this?",
+      requestedSchema = {
+        type = "object",
+        properties = { name = { type = "string", title = "Name" } },
+        required = { "name" },
+      },
+    })
+
+    return _G.sent
+  ]])
+
+  h.eq(1, #result)
+  h.eq("accept", result[1].response.action)
+  h.eq("Apurv", result[1].response.content.name)
+end
+
+T["ACP Responses"]["cancels a pending elicitation without answering twice"] = function()
+  local result = child.lua([[
+    local connection = create_test_connection()
+    connection.session_id = "s1"
+    connection._state.handle = { write = function() end }
+
+    _G.sent = {}
+    function connection:send_result(id, response)
+      table.insert(_G.sent, { id = id, response = response })
+    end
+
+    local answer
+    vim.ui.input = function(_, callback)
+      answer = callback
+    end
+
+    connection:handle_elicitation_create(8, {
+      sessionId = "s1",
+      mode = "form",
+      message = "Who is this?",
+      requestedSchema = {
+        type = "object",
+        properties = { name = { type = "string", title = "Name" } },
+      },
+    })
+
+    connection:cancel_pending_elicitations()
+    answer("late answer")
+
+    return _G.sent
+  ]])
+
+  h.eq(1, #result)
+  h.eq("cancel", result[1].response.action)
+end
+
+T["ACP Responses"]["refuses an elicitation mode the client does not advertise"] = function()
+  local result = child.lua([[
+    local connection = create_test_connection()
+    connection.session_id = "s1"
+
+    _G.sent = {}
+    function connection:send_result(id, response)
+      table.insert(_G.sent, { id = id, response = response })
+    end
+    function connection:send_error(id, message)
+      table.insert(_G.sent, { id = id, error = message })
+    end
+
+    connection:handle_elicitation_create(9, {
+      sessionId = "s1",
+      mode = "url",
+      message = "Sign in",
+      url = "https://example.com",
+      elicitationId = "e1",
+    })
+
+    return _G.sent
+  ]])
+
+  h.eq(1, #result)
+  h.expect_contains("only form elicitations", result[1].error)
+end
+
+T["ACP Responses"]["refuses an elicitation for another session"] = function()
+  local result = child.lua([[
+    local connection = create_test_connection()
+    connection.session_id = "s1"
+
+    _G.sent = {}
+    function connection:send_error(id, message)
+      table.insert(_G.sent, { id = id, error = message })
+    end
+
+    connection:handle_elicitation_create(10, {
+      sessionId = "other",
+      mode = "form",
+      message = "Who is this?",
+      requestedSchema = { type = "object", properties = {} },
+    })
+
+    return _G.sent
+  ]])
+
+  h.eq(1, #result)
+  h.expect_contains("invalid sessionId", result[1].error)
 end
 
 return T

@@ -373,6 +373,28 @@ The LLM is instructed to flag a command that runs a test suite. CodeCompanion th
 | `require_approval_before` | `true` | Require approval before running a command |
 | `safe_commands` | `{ "git status", "ls", "pwd" }` | Commands that run without asking in Auto mode |
 | `timeout` | `300000` | Milliseconds before a command is terminated |
+| `background` | `{ enabled = true, auto_submit = false }` | Let you send a running command to the background |
+
+A long command can be sent to the background from its [activity card](/usage/chat-buffer#running-activity). The tool returns straight away so the agent carries on, and CodeCompanion adds the command's output to the chat when it finishes. A backgrounded command isn't bound by `timeout`. To stop one, use Stop command on its card.
+
+```lua
+require("codecompanion").setup({
+  interactions = {
+    chat = {
+      tools = {
+        ["run_command"] = {
+          opts = {
+            background = {
+              enabled = true, -- Offer Send to background on a running command
+              auto_submit = false, -- Send the output to the LLM as soon as the command finishes
+            },
+          },
+        },
+      },
+    },
+  },
+})
+```
 
 ### search_help
 
