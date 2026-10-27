@@ -21,12 +21,6 @@ local function is_visual_mode(mode)
   return mode == "v" or mode == "V" or mode == "^V"
 end
 
----@param mode string
----@return boolean
-local function is_normal_mode(mode)
-  return mode == "n" or mode == "no" or mode == "nov" or mode == "noV" or mode == "no"
-end
-
 ---@param bufnr nil|number
 ---@return table,number,number,number,number
 function M.get_visual_selection(bufnr)

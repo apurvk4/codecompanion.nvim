@@ -128,7 +128,7 @@ function M.execute(opt)
     return
   end
 
-  if not (opt.type == "slash_command") then
+  if opt.type ~= "slash_command" then
     return
   end
 

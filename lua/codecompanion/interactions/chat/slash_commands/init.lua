@@ -191,7 +191,7 @@ function SlashCommands.run(selected, chat)
       interactions.add_context(selected.config, chat)
     end
 
-    local prompts = {}
+    local prompts
     if selected.config.opts and selected.config.opts.is_markdown then
       prompts =
         require("codecompanion.prompt_library.markdown").resolve_placeholders(selected.config, selected.context).prompts

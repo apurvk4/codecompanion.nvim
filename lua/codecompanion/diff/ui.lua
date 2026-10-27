@@ -514,8 +514,8 @@ function DiffUI:apply_inline(diff, bufnr)
 
     if #deleted_lines > 0 then
       local line_count = api.nvim_buf_line_count(bufnr)
-      local anchor_row = 0
-      local virt_above = false
+      local anchor_row
+      local virt_above
       local hl_group = "CodeCompanionDiffDelete"
       if line_count == 0 then
         anchor_row = 0

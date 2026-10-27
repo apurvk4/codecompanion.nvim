@@ -631,15 +631,158 @@ M.clear_approvals = {
   end,
 }
 
+M.attach_context = {
+  desc = "Attach current buffer, all open buffers, or remove attached context",
+  callback = function(chat)
+    local composer_controls = require("codecompanion.interactions.chat.composer_controls")
+    local choices = {
+      { label = "Attach current buffer", context = "buffer" },
+      { label = "Attach all open buffers", context = "buffers" },
+    }
+    for _, item in ipairs(composer_controls.attached_context(chat)) do
+      table.insert(choices, { label = "Remove " .. item.label, remove = item.token })
+    end
+
+    vim.ui.select(choices, {
+      prompt = "Attach context",
+      format_item = function(choice)
+        return choice.label
+      end,
+    }, function(choice)
+      if not choice then
+        return
+      end
+
+      if choice.remove then
+        return composer_controls.remove_context(chat, choice.remove)
+      end
+      if not api.nvim_buf_is_valid(chat.bufnr) then
+        return
+      end
+
+      local prefix = require("codecompanion.triggers").mappings.editor_context
+      local token = prefix .. "{" .. choice.context .. "}"
+      if composer_controls.insert_context(chat, token) then
+        return
+      end
+      local last_row = api.nvim_buf_line_count(chat.bufnr) - 1
+      local line = api.nvim_buf_get_lines(chat.bufnr, last_row, last_row + 1, false)[1] or ""
+      local separator = line == "" and "" or " "
+      api.nvim_buf_set_text(chat.bufnr, last_row, #line, last_row, #line, { separator .. token })
+      if chat.ui:is_visible() then
+        api.nvim_win_set_cursor(chat.ui.winnr, { last_row + 1, #line + #separator + #token })
+      end
+      composer_controls.update(chat)
+    end)
+  end,
+}
+
+M.agent_options = {
+  desc = "Change an effort or agent option",
+  callback = function(chat)
+    if chat.adapter.type ~= "acp" then
+      return require("codecompanion.interactions.chat.composer_controls").select_effort(chat)
+    end
+
+    local connection = chat.acp_connection
+    if not connection then
+      return utils.notify("Agent options are available after the ACP connection is ready", vim.log.levels.INFO)
+    end
+
+    local options = connection:get_config_options()
+    if #options == 0 then
+      return utils.notify("The active agent has no configurable session options", vim.log.levels.INFO)
+    end
+
+    local function select_value(option)
+      if option.type ~= "select" then
+        return utils.notify("Unsupported agent option type: " .. (option.type or "unknown"), vim.log.levels.WARN)
+      end
+
+      local values = require("codecompanion.acp").flatten_config_options(option.options or {})
+      if #values == 0 then
+        return utils.notify("No values available for " .. option.name, vim.log.levels.WARN)
+      end
+
+      vim.ui.select(values, {
+        prompt = option.name,
+        format_item = function(value)
+          local marker = value.value == option.currentValue and "* " or "  "
+          return marker .. value.name .. (value.description and (" - " .. value.description) or "")
+        end,
+      }, function(value)
+        if value and connection:set_config_option(option.id, value.value) then
+          chat._acp_name_map_cache = nil
+          chat:update_metadata()
+        end
+      end)
+    end
+
+    if #options == 1 then
+      return select_value(options[1])
+    end
+
+    vim.ui.select(options, {
+      prompt = "Agent session options",
+      format_item = function(option)
+        return option.name .. (option.description and (" - " .. option.description) or "")
+      end,
+    }, select_value)
+  end,
+}
+
+M.changed_files = {
+  desc = "Review files changed by this chat",
+  callback = function(chat)
+    local edited_files = require("codecompanion.interactions.shared.edited_files").for_chat(chat.id)
+    if #edited_files == 0 then
+      return utils.notify("This chat has not reported any file edits", vim.log.levels.INFO)
+    end
+
+    local added, removed = 0, 0
+    for _, edit in ipairs(edited_files) do
+      added = added + (edit.added or 0)
+      removed = removed + (edit.removed or 0)
+    end
+
+    local choices = vim.deepcopy(edited_files)
+    table.insert(choices, { review_all = true, path = "Review all changes" })
+    vim.ui.select(choices, {
+      prompt = string.format("Changed files  %d  (+%d / -%d)", #edited_files, added, removed),
+      format_item = function(edit)
+        if edit.review_all then
+          return "Review all changes"
+        end
+        return string.format("%s  +%d -%d", vim.fn.fnamemodify(edit.path, ":."), edit.added or 0, edit.removed or 0)
+      end,
+    }, function(edit)
+      if not edit then
+        return
+      end
+      if not edit.review_all then
+        vim.cmd.edit(vim.fn.fnameescape(edit.path))
+      end
+      require("codecompanion.interactions.code_review").open_window()
+    end)
+  end,
+}
+
+M.activity = {
+  desc = "Show actions for the activity card under the cursor",
+  callback = function(chat)
+    require("codecompanion.interactions.chat.ui.activity").actions(chat)
+  end,
+}
+
 M.yolo_mode = {
   desc = "Choose how tool calls are approved",
   callback = function(chat)
     local approvals = require("codecompanion.interactions.chat.tools.approvals")
     local current = approvals:get_mode(chat.bufnr)
     local modes = {
-      { mode = "ask", label = "Ask", description = "prompt before any tool that needs approval" },
-      { mode = "auto", label = "Auto", description = "run reads, edits and safe commands; judge or prompt the rest" },
-      { mode = "yolo", label = "YOLO", description = "run everything without asking" },
+      { mode = "ask", label = "Default / Ask", description = "prompt before any tool that needs approval" },
+      { mode = "auto", label = "Auto-approve safe actions", description = "run safe actions; prompt for the rest" },
+      { mode = "yolo", label = "Allow all", description = "run everything without asking" },
     }
 
     vim.ui.select(modes, {
@@ -653,7 +796,12 @@ M.yolo_mode = {
         return
       end
       approvals:set_mode(chat.bufnr, { mode = choice.mode })
-      utils.notify(("Approval mode: %s"):format(choice.label), vim.log.levels.INFO)
+      require("codecompanion.interactions.chat.composer_controls").update(chat)
+      if choice.mode == "yolo" then
+        utils.notify("Allow all: tools and commands run without asking. Use with care.", vim.log.levels.WARN)
+      else
+        utils.notify(("Approval mode: %s"):format(choice.label), vim.log.levels.INFO)
+      end
     end)
   end,
 }

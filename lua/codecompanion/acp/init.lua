@@ -611,6 +611,9 @@ function Connection:prepare_adapter()
   local adapter = vim.deepcopy(self.adapter)
   adapter = adapter_utils.get_env_vars(adapter, { timeout = config.adapters.opts.cmd_timeout })
   adapter.parameters = adapter_utils.set_env_vars(adapter, adapter.parameters)
+  adapter.parameters = adapter.parameters or {}
+  adapter.parameters.clientCapabilities =
+    vim.tbl_deep_extend("keep", adapter.parameters.clientCapabilities or {}, { terminal = true })
   adapter.defaults.auth_method = adapter_utils.set_env_vars(adapter, adapter.defaults.auth_method)
   adapter.defaults.mcpServers = adapter_utils.set_env_vars(adapter, adapter.defaults.mcpServers)
   adapter.command = adapter_utils.set_env_vars(adapter, adapter.commands.selected or adapter.commands.default)
@@ -621,6 +624,9 @@ end
 ---Disconnect and clean up the ACP process
 ---@return nil
 function Connection:disconnect()
+  if self.chat then
+    require("codecompanion.interactions.chat.terminal").release_for_owner(self.chat.id)
+  end
   assert(self._state.handle):kill("sigterm")
 end
 
@@ -750,6 +756,21 @@ local DISPATCH = {
   [METHODS.FS_WRITE_TEXT_FILE] = function(self, m)
     self:handle_fs_write_file_request(m.id, m.params)
   end,
+  [METHODS.TERMINAL_CREATE] = function(self, m)
+    self:handle_terminal_create(m.id, m.params)
+  end,
+  [METHODS.TERMINAL_OUTPUT] = function(self, m)
+    self:handle_terminal_output(m.id, m.params)
+  end,
+  [METHODS.TERMINAL_WAIT_FOR_EXIT] = function(self, m)
+    self:handle_terminal_wait_for_exit(m.id, m.params)
+  end,
+  [METHODS.TERMINAL_KILL] = function(self, m)
+    self:handle_terminal_kill(m.id, m.params)
+  end,
+  [METHODS.TERMINAL_RELEASE] = function(self, m)
+    self:handle_terminal_release(m.id, m.params)
+  end,
 }
 
 ---Handle incoming requests and notifications from the ACP agent process
@@ -877,6 +898,271 @@ function Connection:handle_fs_write_file_request(id, params)
   else
     self:send_error(id, ("fs/write_text_file failed: %s"):format(err or "unknown"))
   end
+end
+
+---@param path string
+---@return boolean
+local function within_workspace(path)
+  local root = vim.fs.normalize(vim.fn.getcwd())
+  local target = vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))
+  return target == root or vim.startswith(target, root .. "/")
+end
+
+---@param chat CodeCompanion.Chat
+---@param command string
+---@param has_env boolean
+---@return boolean
+local function terminal_needs_approval(chat, command, has_env)
+  local Approvals = require("codecompanion.interactions.chat.tools.approvals")
+  local mode = Approvals:get_mode(chat.bufnr)
+  if mode == "yolo" then
+    return false
+  end
+  if mode == "auto" and not has_env and Approvals.is_safe_command(command) then
+    return false
+  end
+  return not Approvals:is_approved(chat.bufnr, { tool_name = "run_command", cmd = command })
+end
+
+---The environment assignments an agent sent, as display strings
+---@param env table|nil
+---@return string[]
+local function env_assignments(env)
+  local assignments = {}
+  if type(env) ~= "table" then
+    return assignments
+  end
+
+  for name, value in pairs(env) do
+    if type(name) == "string" then
+      table.insert(assignments, ("%s=%s"):format(name, tostring(value)))
+    elseif type(value) == "table" and type(value.name) == "string" then
+      table.insert(assignments, ("%s=%s"):format(value.name, tostring(value.value or "")))
+    end
+  end
+  table.sort(assignments)
+  return assignments
+end
+
+---@param chat CodeCompanion.Chat
+---@param id number
+---@param command string
+---@param on_allow fun()
+---@return nil
+function Connection:_ask_terminal_approval(chat, id, command, on_allow)
+  vim.ui.select({ "Allow once", "Allow always", "Reject" }, {
+    prompt = ("Run `%s` in a terminal?"):format(command),
+  }, function(choice)
+    if choice == "Allow once" then
+      return on_allow()
+    end
+    if choice == "Allow always" then
+      local Approvals = require("codecompanion.interactions.chat.tools.approvals")
+      Approvals:always(chat.bufnr, { tool_name = "run_command", cmd = command })
+      return on_allow()
+    end
+    self:send_error(id, "terminal/create was rejected", jsonrpc.errors.INTERNAL)
+  end)
+end
+
+---Handle terminal/create requests
+---@param id number
+---@param params table
+---@return nil
+function Connection:handle_terminal_create(id, params)
+  if not id or type(params) ~= "table" then
+    return
+  end
+  if not self:_has_valid_session_id(params) then
+    return self:send_error(id, "invalid sessionId for terminal/create", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local command = params.command
+  if type(command) ~= "string" or command == "" then
+    return self:send_error(id, "invalid params", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local args = params.args
+  if args == vim.NIL then
+    args = nil
+  end
+  if args ~= nil and type(args) ~= "table" then
+    return self:send_error(id, "invalid params", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local env = params.env
+  if env == vim.NIL then
+    env = nil
+  end
+  if env ~= nil and type(env) ~= "table" then
+    return self:send_error(id, "invalid params", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local cwd = params.cwd
+  if cwd == vim.NIL then
+    cwd = nil
+  end
+  if cwd ~= nil and type(cwd) ~= "string" then
+    return self:send_error(id, "invalid params", jsonrpc.errors.INVALID_PARAMS)
+  end
+  cwd = cwd or vim.fn.getcwd()
+  if not within_workspace(cwd) then
+    return self:send_error(id, "terminal/create cwd is outside the workspace", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local chat = self:get_chat(params.sessionId)
+  if not chat then
+    return self:send_error(id, "no chat for session", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local command_line = vim.trim(table.concat({ command, table.concat(args or {}, " ") }, " "))
+  local env_parts = env_assignments(env)
+  local approval_line = command_line
+  if #env_parts > 0 then
+    approval_line = table.concat(env_parts, " ") .. " " .. command_line
+  end
+
+  local function start()
+    local Terminal = require("codecompanion.interactions.chat.terminal")
+    local terminal_id, err = Terminal.create({
+      command = command,
+      args = args,
+      env = env,
+      cwd = cwd,
+      output_byte_limit = params.outputByteLimit,
+      owner = chat.id,
+    })
+    if not terminal_id then
+      return self:send_error(id, err or "terminal/create failed")
+    end
+    self:send_result(id, { terminalId = terminal_id })
+  end
+
+  if terminal_needs_approval(chat, approval_line, #env_parts > 0) then
+    return self:_ask_terminal_approval(chat, id, approval_line, start)
+  end
+
+  start()
+end
+
+---@param params table
+---@return string|nil terminal_id
+---@return string|nil err
+local function terminal_from_params(params)
+  if type(params.terminalId) ~= "string" or params.terminalId == "" then
+    return nil, "invalid params"
+  end
+  return params.terminalId
+end
+
+---Handle terminal/output requests
+---@param id number
+---@param params table
+---@return nil
+function Connection:handle_terminal_output(id, params)
+  if not id or type(params) ~= "table" then
+    return
+  end
+  if not self:_has_valid_session_id(params) then
+    return self:send_error(id, "invalid sessionId for terminal/output", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local terminal_id, err = terminal_from_params(params)
+  if not terminal_id then
+    return self:send_error(id, err, jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local Terminal = require("codecompanion.interactions.chat.terminal")
+  local result, output_err = Terminal.output(terminal_id)
+  if not result then
+    return self:send_error(id, output_err or "unknown terminal", jsonrpc.errors.INVALID_PARAMS)
+  end
+  self:send_result(id, result)
+end
+
+---Handle terminal/wait_for_exit requests
+---@param id number
+---@param params table
+---@return nil
+function Connection:handle_terminal_wait_for_exit(id, params)
+  if not id or type(params) ~= "table" then
+    return
+  end
+  if not self:_has_valid_session_id(params) then
+    return self:send_error(id, "invalid sessionId for terminal/wait_for_exit", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local terminal_id, err = terminal_from_params(params)
+  if not terminal_id then
+    return self:send_error(id, err, jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local Terminal = require("codecompanion.interactions.chat.terminal")
+  local ok = Terminal.wait_for_exit(terminal_id, function(exit)
+    if exit then
+      self:send_result(id, exit)
+    else
+      self:send_error(id, "terminal released before exit")
+    end
+  end)
+  if not ok then
+    return self:send_error(id, "unknown terminal", jsonrpc.errors.INVALID_PARAMS)
+  end
+end
+
+---Handle terminal/kill requests
+---@param id number
+---@param params table
+---@return nil
+function Connection:handle_terminal_kill(id, params)
+  if not id or type(params) ~= "table" then
+    return
+  end
+  if not self:_has_valid_session_id(params) then
+    return self:send_error(id, "invalid sessionId for terminal/kill", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local terminal_id, err = terminal_from_params(params)
+  if not terminal_id then
+    return self:send_error(id, err, jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local Terminal = require("codecompanion.interactions.chat.terminal")
+  if not Terminal.kill(terminal_id) then
+    return self:send_error(id, "unknown terminal", jsonrpc.errors.INVALID_PARAMS)
+  end
+  self:send_result(id, vim.NIL)
+end
+
+---Handle terminal/release requests
+---@param id number
+---@param params table
+---@return nil
+function Connection:handle_terminal_release(id, params)
+  if not id or type(params) ~= "table" then
+    return
+  end
+  if not self:_has_valid_session_id(params) then
+    return self:send_error(id, "invalid sessionId for terminal/release", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local terminal_id, err = terminal_from_params(params)
+  if not terminal_id then
+    return self:send_error(id, err, jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local Terminal = require("codecompanion.interactions.chat.terminal")
+  local result = Terminal.output(terminal_id)
+  if not Terminal.release(terminal_id) then
+    return self:send_error(id, "unknown terminal", jsonrpc.errors.INVALID_PARAMS)
+  end
+
+  local chat = self:get_chat(params.sessionId)
+  if chat and result then
+    require("codecompanion.interactions.chat.ui.activity").detach_terminal(chat, terminal_id, result.output)
+  end
+
+  self:send_result(id, vim.NIL)
 end
 
 ---Handle available_commands_update (Slash Commands)

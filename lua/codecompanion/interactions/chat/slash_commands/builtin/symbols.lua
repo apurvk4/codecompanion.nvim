@@ -69,7 +69,7 @@ function SlashCommand:output(selected, opts)
   end
   opts = opts or {}
 
-  local symbols, content, ft = helpers.extract_file_symbols(selected.path)
+  local symbols, _, ft = helpers.extract_file_symbols(selected.path)
 
   if not symbols then
     return no_query(ft)
@@ -101,7 +101,7 @@ function SlashCommand:output(selected, opts)
   end
 
   local id = "<symbols>" .. (selected.relative_path or selected.path) .. "</symbols>"
-  content = table.concat(symbol_descriptions, "\n")
+  local content = table.concat(symbol_descriptions, "\n")
 
   -- Workspaces allow the user to set their own custom description which should take priority
   local description

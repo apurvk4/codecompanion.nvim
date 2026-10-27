@@ -63,7 +63,7 @@ function SlashCommand:execute()
         Chat.acp_connection = nil
       end
 
-      require("codecompanion.interactions.chat.helpers").create_acp_connection(Chat)
+      require("codecompanion.interactions.chat.helpers").create_acp_connection(Chat, nil, { defer_session = true })
       utils.notify(string.format("Switched to `%s` command", selected))
     end
   end)

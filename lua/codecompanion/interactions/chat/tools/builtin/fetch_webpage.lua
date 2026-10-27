@@ -17,10 +17,10 @@ return {
     ---@return nil
     function(self, args, opts)
       local cb = opts.output_cb
-      local opts = self.tool.opts
+      local tool_opts = self.tool.opts
       local url = args.url
 
-      if not opts or not opts.adapter then
+      if not tool_opts or not tool_opts.adapter then
         log:error("[Fetch Webpage Tool] No adapter set for `fetch_webpage`")
         return cb({ status = "error", data = "No adapter for `fetch_webpage`" })
       end

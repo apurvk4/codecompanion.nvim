@@ -1,3 +1,4 @@
+local Activity = require("codecompanion.interactions.chat.ui.activity")
 local Approvals = require("codecompanion.interactions.chat.tools.approvals")
 local Queue = require("codecompanion.interactions.chat.tools.runtime.queue")
 local Runner = require("codecompanion.interactions.chat.tools.runtime.runner")
@@ -68,9 +69,9 @@ local function cmd_to_func_tool(opts)
       end
 
       ---@param tools CodeCompanion.Tools
-      return function(tools, _, opts)
-        local cb = vim.schedule_wrap(opts.output_cb)
-        orchestrator.current_job = execute_shell_command({ cmd = cmd, timeout = timeout }, function(out)
+      return function(tools, _, tool_opts)
+        local cb = vim.schedule_wrap(tool_opts.output_cb)
+        local job = execute_shell_command({ cmd = cmd, timeout = timeout }, function(out)
           orchestrator.current_job = nil
 
           if flag then
@@ -99,6 +100,11 @@ local function cmd_to_func_tool(opts)
             cb({ status = "error", data = combined })
           end
         end)
+
+        orchestrator.current_job = job
+        if orchestrator.tool_label then
+          Activity.attach_job(tools.chat, orchestrator.tool_label.id, job)
+        end
       end
     end)
     :totable()
@@ -116,7 +122,7 @@ end
 ---@field queue CodeCompanion.Queue
 ---@field status string The status of the tool execution "success" | "error"
 ---@field tool CodeCompanion.Tools.Tool The current tool being executed
----@field tool_label { line_number: number, icon_id: number?, text: string, status: string }? Where the running tool's label sits in the chat buffer
+---@field tool_label { id: string, text: string, status: string }? The activity card for the running tool
 ---@field tool_output table? The output collected from the tool
 ---@field tools CodeCompanion.Tools
 local Orchestrator = {}
@@ -273,6 +279,23 @@ function Orchestrator:_setup_handlers()
   }
 end
 
+---A short summary of a tool's arguments when it has no command string
+---@param args any
+---@return string|nil
+local function summarise_arguments(args)
+  if type(args) ~= "table" then
+    return nil
+  end
+
+  local preferred = { "filepath", "path", "url", "query", "pattern", "cmd", "command", "name" }
+  for _, key in ipairs(preferred) do
+    local value = args[key]
+    if type(value) == "string" and vim.trim(value) ~= "" then
+      return vim.trim(value)
+    end
+  end
+end
+
 ---Create the label for the tool in the chat buffer
 ---@return string
 function Orchestrator:_create_label()
@@ -280,30 +303,40 @@ function Orchestrator:_create_label()
   if ok and type(cmd_string) == "string" and cmd_string ~= "" then
     return fmt("%s: %s", self.tool.name, cmd_string)
   end
+
+  local summary = summarise_arguments(self.tool.args)
+  if summary then
+    return fmt("%s: %s", self.tool.name, summary)
+  end
+
   return self.tool.name
 end
 
 ---@return nil
 function Orchestrator:_write_label_to_chat()
   local text = self:_create_label()
+  local call = self.tool.function_call
+  local id = type(call) == "table" and call.id or nil
 
-  local ok, line_number, icon_id = pcall(self.tools.chat.add_buf_message, self.tools.chat, {
-    role = config.constants.LLM_ROLE,
-    content = text,
-  }, {
-    status = "in_progress",
-    virt_text_pos = "inline",
-    type = self.tools.chat.MESSAGE_TYPES.TOOL_MESSAGE,
+  local card = Activity.upsert(self.tools.chat, {
+    id = id,
+    title = text,
+    status = "running",
+    kind = self.tool.name,
+    on_stop = function()
+      self:cancel()
+    end,
   })
 
-  if not ok or not line_number then
-    return log:debug("[Orchestrator::_write_label_to_chat] Couldn't write the label for `%s`", self.tool.name)
-  end
-
-  self.tool_label = { line_number = line_number, icon_id = icon_id, text = text, status = "failed" }
+  self.tool_label = { id = card.id, text = text, status = "running" }
 end
 
----Update the label's icon for the tool's final status
+---@return string
+function Orchestrator:_captured_output()
+  return self.tool_output or {}
+end
+
+---Update the card with the tool's final status and captured output
 ---@return nil
 function Orchestrator:_label_completed()
   local label = self.tool_label
@@ -312,13 +345,17 @@ function Orchestrator:_label_completed()
     return
   end
 
-  pcall(self.tools.chat.update_buf_line, self.tools.chat, {
-    line_number = label.line_number,
-    content = label.text,
-    status = label.status,
-    icon_id = label.icon_id,
-    priority = 120,
-    virt_text_pos = "inline",
+  local status = "cancelled"
+  if label.status == "completed" then
+    status = "success"
+  elseif label.status == "failed" then
+    status = "error"
+  end
+
+  Activity.upsert(self.tools.chat, {
+    id = label.id,
+    status = status,
+    output = self:_captured_output(),
   })
 end
 
@@ -547,6 +584,9 @@ function Orchestrator:cancel()
   end
 
   if self.tool then
+    if self.tool_label then
+      self.tool_label.status = "cancelled"
+    end
     local ok, err = pcall(function()
       self.output.cancelled(self.tool.cmds and self.tool.cmds[1])
     end)
@@ -593,6 +633,8 @@ function Orchestrator:error(args)
   end
   if args.error then
     table.insert(self.tools.stderr, args.error)
+    self.tool_output = self.tool_output or {}
+    table.insert(self.tool_output, args.error)
   end
 
   local ok, err = pcall(function()

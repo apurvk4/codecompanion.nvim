@@ -1,3 +1,4 @@
+local Activity = require("codecompanion.interactions.chat.ui.activity")
 local log = require("codecompanion.utils.log")
 
 ---@class CodeCompanion.Tools.Orchestrator.Runner
@@ -108,6 +109,9 @@ function Runner:run_tool(tool_cmd, action, args)
       output_cb = output_handler,
       register_job = function(job)
         self.orchestrator.current_job = job
+        if self.orchestrator.tool_label then
+          Activity.attach_job(self.orchestrator.tools.chat, self.orchestrator.tool_label.id, job)
+        end
       end,
     })
   end)

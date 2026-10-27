@@ -310,8 +310,10 @@ return {
         },
       },
       opts = {
+        composer_controls = false,
         debounce = 0,
         wait_timeout = 3000,
+        session_picker = false,
         system_prompt = "default system prompt",
       },
     },

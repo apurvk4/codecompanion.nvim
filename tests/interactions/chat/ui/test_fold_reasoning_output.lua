@@ -153,6 +153,41 @@ T["Reasoning folds"]["does not fold when no body under header"] = function()
   end
 end
 
+T["Reasoning folds"]["stays closed when unrelated output is added"] = function()
+  child.lua([[
+    _G.chat:add_buf_message({ role = "llm", content = "thinking..." }, { type = _G.MT.REASONING_MESSAGE })
+    _G.chat:add_buf_message({ role = "llm", content = "answer" }, { type = _G.MT.LLM_MESSAGE })
+    vim.wait(200, function() return false end)
+
+    _G.chat:add_buf_message({ role = "llm", content = "unrelated tool output" }, { type = _G.MT.TOOL_MESSAGE })
+    vim.wait(200, function() return false end)
+  ]])
+
+  local res = child.lua([[
+    local bufnr = _G.chat.bufnr
+    local folds = require("codecompanion.interactions.chat.ui.folds").fold_summaries[bufnr] or {}
+
+    local header_row0
+    for i, line in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, true)) do
+      if line == "### Reasoning" then
+        header_row0 = i - 1
+        break
+      end
+    end
+
+    local start0 = header_row0 and header_row0 + 1 or nil
+    local fold = start0 and folds[start0] or nil
+
+    return {
+      fold_type = fold and fold.type,
+      is_closed = start0 and vim.fn.foldclosed(start0 + 2) ~= -1 or false,
+    }
+  ]])
+
+  h.eq("reasoning", res.fold_type)
+  h.is_true(res.is_closed)
+end
+
 T["Reasoning folds"]["preserves earlier folds when adding a new reasoning fold"] = function()
   child.lua([[
     -- First reasoning block

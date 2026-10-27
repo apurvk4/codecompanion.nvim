@@ -380,8 +380,8 @@ function Client:_on_transport_line_read(line)
     local entry = self.resp_handlers[msg.id]
     if entry then
       self.resp_handlers[msg.id] = nil
-      local ok, result = pcall(entry.handler, msg)
-      if not ok then
+      local handler_ok, result = pcall(entry.handler, msg)
+      if not handler_ok then
         log:debug("[MCP::Client::%s] Response handler failed for request %s: %s", self.name, msg.id, result)
       end
     end

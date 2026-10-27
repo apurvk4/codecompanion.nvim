@@ -150,6 +150,22 @@ local function get_first_changed_line(opts)
   return 1
 end
 
+---@param from_text string
+---@param to_text string
+---@return number added
+---@return number removed
+local function count_changes(from_text, to_text)
+  local added, removed = 0, 0
+  for line in vim.diff(from_text, to_text, { result_type = "unified" }):gmatch("[^\n]+") do
+    if line:sub(1, 1) == "+" and line:sub(1, 3) ~= "+++" then
+      added = added + 1
+    elseif line:sub(1, 1) == "-" and line:sub(1, 3) ~= "---" then
+      removed = removed + 1
+    end
+  end
+  return added, removed
+end
+
 ---Show the edit for review and write it once accepted
 ---@param tools CodeCompanion.Tools
 ---@param opts { edited: string, output_cb: fun(response: table), target: CodeCompanion.Tool.EditFile.Target }
@@ -158,6 +174,9 @@ local function review_edit(tools, opts)
   local target = opts.target
   local from_lines = split_lines(target.content)
   local to_lines = split_lines(opts.edited)
+  local added, removed = count_changes(target.content, opts.edited)
+  local function_call = tools.tool and tools.tool.function_call
+  local tool_call_id = function_call and (function_call.id or (function_call["function"] or {}).id)
 
   return diff.review({
     from_lines = from_lines,
@@ -171,10 +190,15 @@ local function review_edit(tools, opts)
         })
       end
       utils.fire("FileEdited", {
+        added = added,
         bufnr = target.bufnr,
+        chat_bufnr = tools.chat and tools.chat.bufnr,
+        chat_id = tools.chat and tools.chat.id,
         line = get_first_changed_line({ from_lines = from_lines, to_lines = to_lines }),
         path = target.path,
+        removed = removed,
         tool = "edit_file",
+        tool_call_id = tool_call_id,
       })
       opts.output_cb({ status = "success", data = fmt("Edited `%s`", target.display_name) })
     end,

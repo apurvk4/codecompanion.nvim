@@ -264,7 +264,7 @@ end
 ---@param stop_reason string
 ---@return nil
 function PromptBuilder:handle_done(stop_reason)
-  local status = "success"
+  local status
   if stop_reason == "refusal" then
     status = "error"
   elseif stop_reason == "max_tokens" then

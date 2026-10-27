@@ -41,7 +41,7 @@ local function _ts_highlight(opts)
   local parser ---@type vim.treesitter.LanguageTree?
   if lang then
     lang = lang:lower()
-    local ok = false
+    local ok
     ok, parser = pcall(vim.treesitter.get_parser, bufnr, lang)
     parser = ok and parser or nil
   end

@@ -269,6 +269,8 @@ end
 ---@return nil
 function UI:hide(opts)
   opts = opts or {}
+  utils.fire("ChatHidden", { bufnr = self.chat_bufnr, id = self.chat_id })
+
   if not opts.keep_window then
     local layout
     if self.window_opts then
@@ -278,8 +280,6 @@ function UI:hide(opts)
     end
     shared_ui.hide(self.winnr, self.chat_bufnr, layout)
   end
-
-  utils.fire("ChatHidden", { bufnr = self.chat_bufnr, id = self.chat_id })
 end
 
 ---Follow the cursor in the chat buffer

@@ -100,7 +100,7 @@ end
 ---@param opts { bufnr: number, line: number }
 function Folds:_delete(opts)
   local bufnr, line = opts.bufnr, opts.line
-  local ok, err = pcall(function()
+  pcall(function()
     api.nvim_buf_call(bufnr, function()
       local lnum = line + 1
 

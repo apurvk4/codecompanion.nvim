@@ -82,16 +82,6 @@ return {
             :totable()
         end
 
-        local args = vim.split(cmdline, "%s+")
-        local current_arg_index = #args
-
-        -- If we're typing in the middle of an argument, adjust the index
-        if cmdline:sub(cursor_pos, cursor_pos) ~= " " and arg_lead ~= "" then
-          current_arg_index = current_arg_index
-        else
-          current_arg_index = current_arg_index + 1
-        end
-
         -- Always provide completions for adapters, prompt library, and editor context
         local completions = {}
         local adapters = get_adapters("http")

@@ -81,11 +81,6 @@ return {
       return openai.handlers.form_parameters(self, params, messages)
     end,
     form_messages = function(self, messages)
-      local model = self.schema.model.default
-      if type(model) == "function" then
-        model = model(self)
-      end
-
       messages = vim
         .iter(messages)
         :map(function(m)

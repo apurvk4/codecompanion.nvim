@@ -23,6 +23,11 @@ end
 ---@return nil
 Helpers.setup_plugin = function(config)
   local test_config = config or require("tests.config")
+  local chat_opts = test_config.interactions and test_config.interactions.chat and test_config.interactions.chat.opts
+  if chat_opts then
+    chat_opts.session_picker = false
+    chat_opts.composer_controls = false
+  end
 
   -- To be safe, ensure that we mock some of the Copilot adapter's features
   -- that make HTTP requests. This slows tests down and makes them fail

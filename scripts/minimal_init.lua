@@ -3,6 +3,19 @@ vim.cmd("set rtp+=deps/mini.nvim")
 vim.cmd("set rtp+=deps/plenary.nvim")
 vim.cmd("set rtp+=deps/nvim-treesitter")
 
+if vim.fn.has("nvim-0.12") == 0 then
+  local version = vim.version()
+  error(("CodeCompanion tests require Neovim 0.12 or later; selected binary is %d.%d.%d"):format(
+    version.major,
+    version.minor,
+    version.patch
+  ))
+end
+
+if vim.fn.executable("tree-sitter") ~= 1 then
+  error("CodeCompanion tests require the tree-sitter CLI (Arch-based Linux: sudo pacman -S tree-sitter-cli)")
+end
+
 -- Ensure mini.test is available
 require("mini.test").setup()
 
@@ -23,11 +36,11 @@ local ok, err_or_ok = require("nvim-treesitter")
     "markdown",
     "markdown_inline",
     "yaml",
-  }, { summary = true, max_jobs = 10 })
+  }, { summary = true, max_jobs = 2 })
   :wait(1800000)
 
 if not ok then
-  print("ERROR: ", err_or_ok)
+  error("Could not install required Tree-sitter parsers: " .. tostring(err_or_ok))
 end
 
 vim.treesitter.language.register("markdown", "codecompanion")

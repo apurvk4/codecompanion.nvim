@@ -8,6 +8,7 @@ local utils = require("codecompanion.utils")
 
 local store = {} ---@type CodeCompanion.EditedFile[]
 local positions = {} ---@type table<string, number> Lookup of path to position in the store
+local chat_edits = {} ---@type table<number, table<string, table<string, CodeCompanion.EditedFile>>>
 
 local M = {}
 
@@ -33,6 +34,29 @@ end
 ---@return CodeCompanion.EditedFile[]
 function M.all()
   return store
+end
+
+---Return the files edited by one chat with aggregated line counts
+---@param chat_id number
+---@return CodeCompanion.EditedFile[]
+function M.for_chat(chat_id)
+  local files = {}
+  for _, calls in pairs(chat_edits[chat_id] or {}) do
+    local total = { added = 0, removed = 0 }
+    local sample
+    for _, edit in pairs(calls) do
+      sample = sample or edit
+      total.added = total.added + (edit.added or 0)
+      total.removed = total.removed + (edit.removed or 0)
+    end
+    if sample then
+      table.insert(files, vim.tbl_extend("force", vim.deepcopy(sample), total))
+    end
+  end
+  table.sort(files, function(a, b)
+    return a.path < b.path
+  end)
+  return files
 end
 
 ---Open the edited files in the quickfix list
@@ -64,7 +88,13 @@ function M.setup()
     pattern = "CodeCompanionFileEdited",
     desc = "Track the files that an LLM edits or creates",
     callback = function(args)
-      record(args.data)
+      local edit = args.data
+      record(edit)
+      if edit.chat_id and edit.tool_call_id then
+        chat_edits[edit.chat_id] = chat_edits[edit.chat_id] or {}
+        chat_edits[edit.chat_id][edit.path] = chat_edits[edit.chat_id][edit.path] or {}
+        chat_edits[edit.chat_id][edit.path][edit.tool_call_id] = vim.deepcopy(edit)
+      end
     end,
   })
 end

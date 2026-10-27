@@ -47,7 +47,7 @@ return {
         ---@param data table The data returned from the fetch
         ---@return table{status: string, content: string}|nil
         callback = function(self, data)
-          local ok, data = pcall(vim.json.decode, data.body)
+          local ok, decoded = pcall(vim.json.decode, data.body)
           if not ok then
             return {
               status = "error",
@@ -55,17 +55,17 @@ return {
             }
           end
 
-          if data.code ~= 200 then
-            log:error("[Jina Adapter] Error: %s", data)
+          if decoded.code ~= 200 then
+            log:error("[Jina Adapter] Error: %s", decoded)
             return {
               status = "error",
-              content = data.message or data.body or "Unknown error occurred",
+              content = decoded.message or decoded.body or "Unknown error occurred",
             }
           end
 
           return {
             status = "success",
-            content = data.data.text or "",
+            content = decoded.data.text or "",
           }
         end,
       },
@@ -88,23 +88,23 @@ return {
         ---@param data table The data returned from the fetch
         ---@return table{status: string, content: string}|nil
         callback = function(self, data)
-          local ok, data = pcall(vim.json.decode, data.body)
+          local ok, decoded = pcall(vim.json.decode, data.body)
           if not ok then
             return {
               status = "error",
               output = "Failed to decode JSON content",
             }
           end
-          if data.code ~= 200 then
-            log:error("[Jina Adapter] Error: %s", data)
+          if decoded.code ~= 200 then
+            log:error("[Jina Adapter] Error: %s", decoded)
             return {
               status = "error",
-              content = data.message or data.body or "Unknown error occurred",
+              content = decoded.message or decoded.body or "Unknown error occurred",
             }
           end
           return {
             success = "success",
-            content = data.data.text,
+            content = decoded.data.text,
           }
         end,
       },

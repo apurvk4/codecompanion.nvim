@@ -15,7 +15,9 @@ local T = new_set({
         _G.run_edit = function(args)
           args.filepath = _G.TEST_FILE
           args.replace_all = args.replace_all or false
-          tools:execute(chat, { { ["function"] = { name = "edit_file", arguments = vim.json.encode(args) } } })
+          tools:execute(chat, {
+            { ["function"] = { id = "call-1", name = "edit_file", arguments = vim.json.encode(args) } },
+          })
           vim.wait(10)
           return chat.messages[#chat.messages].content
         end
@@ -153,7 +155,7 @@ T["Edit File"]["restores a buffer that could not be saved"] = function()
   h.eq(false, child.lua_get("vim.bo[vim.fn.bufnr(_G.TEST_FILE)].modified"))
 end
 
-T["Edit File"]["fires FileEdited with the first changed line"] = function()
+T["Edit File"]["fires FileEdited with the first changed line and chat attribution"] = function()
   child.lua([[
     _G.write_raw("before\ntarget\nafter\n")
     _G.file_edits = {}
@@ -169,6 +171,11 @@ T["Edit File"]["fires FileEdited with the first changed line"] = function()
   h.eq(1, #edits)
   h.eq("edit_file", edits[1].tool)
   h.eq(2, edits[1].line)
+  h.eq(1, edits[1].added)
+  h.eq(1, edits[1].removed)
+  h.eq("call-1", edits[1].tool_call_id)
+  h.eq(child.lua_get("chat.id"), edits[1].chat_id)
+  h.eq(child.lua_get("chat.bufnr"), edits[1].chat_bufnr)
 end
 
 return T

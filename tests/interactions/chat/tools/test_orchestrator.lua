@@ -322,4 +322,46 @@ T["protected tool prompts without judging, even for a safe command"] = function(
   h.eq('Run the "dangerous" tool?', child.lua_get("_G.prompted_with"))
 end
 
+T["records a tool call as one activity card with its captured output"] = function()
+  local result = child.lua([[
+    local Activity = require("codecompanion.interactions.chat.ui.activity")
+
+    _G.tools:execute(_G.chat, {
+      {
+        id = "call_1",
+        ["function"] = { name = "files", arguments = { data = "hello" } },
+      },
+    })
+    vim.wait(250, function()
+      local card = Activity.cards(_G.chat)[1]
+      return card ~= nil and card.status == "success"
+    end)
+
+    local cards = Activity.cards(_G.chat)
+    local card = cards[1]
+    return {
+      count = #cards,
+      id = card and card.id,
+      status = card and card.status,
+      output = card and card.output,
+    }
+  ]])
+
+  h.eq(1, result.count)
+  h.eq("call_1", result.id)
+  h.eq("success", result.status)
+  h.eq({ "hello" }, result.output)
+end
+
+T["labels a tool without a command string using its arguments"] = function()
+  local label = child.lua_get([[
+    require("codecompanion.interactions.chat.tools.orchestrator")._create_label({
+      tool = { name = "edit_file", args = { filepath = "/tmp/a.lua" } },
+      output = {},
+    })
+  ]])
+
+  h.eq("edit_file: /tmp/a.lua", label)
+end
+
 return T

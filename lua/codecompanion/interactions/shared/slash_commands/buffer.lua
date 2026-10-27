@@ -17,7 +17,7 @@ local providers = {
   ---@return nil
   default = function(SlashCommand)
     local default = require("codecompanion.providers.slash_commands.default")
-    default = default
+    default
       .new({
         output = function(selection)
           SlashCommand:output(selection)

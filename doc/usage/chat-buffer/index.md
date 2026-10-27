@@ -154,6 +154,44 @@ Add images from disk with [/file](/usage/chat-buffer/slash-commands#file), from 
 
 If the model doesn't accept images, CodeCompanion leaves them out of the request.
 
+## Composer
+
+The prompt composer sits at the bottom of the chat window. It shows the active model, any effort or agent options the adapter advertises, and the approval mode. Drafts stay in the composer when you open a control or hide the window.
+
+| Keymap | Name | Description |
+| --- | --- | --- |
+| `g+` | `attach_context` | Attach the current buffer or all open buffers, or remove attached context |
+| `gO` | `agent_options` | Change an effort or agent option |
+| `gF` | `changed_files` | Review files changed by this chat |
+| `ga` | `change_adapter` | Change adapter and model |
+| `gty` | `yolo_mode` | Choose how tool calls are approved |
+
+`g+` adds `#{buffer}` or `#{buffers}` to the draft and shows each attachment as a chip above the prompt. Open `g+` again to remove an attachment before sending. Attached buffers keep their unsaved content, and the usual [editor context rules](/usage/chat-buffer/editor-context) decide which buffers are skipped.
+
+In normal mode, `<CR>` and `<C-s>` send the draft. In insert mode, `<C-s>` sends, Shift+Enter inserts a newline and Escape clears the draft without sending.
+
+## Running Activity
+
+While the agent works, each tool call and command appears as a card with a title, status and its captured output. Repeated updates for the same tool call change the existing card, so the transcript doesn't grow duplicates.
+
+A running card stays expanded. A successful card collapses to one line, and its output stays available. A failed or cancelled card stays expanded, and a collapsed failure still shows its first output line.
+
+Press `gA` with the cursor on a card to list the actions available for it. The menu only offers an action when CodeCompanion holds a real handle for it:
+
+- **Expand output** or **Collapse output** - show or hide the captured output
+- **Open terminal** - open the terminal buffer for a command CodeCompanion runs for the agent
+- **View command snapshot** - open a read-only snapshot for a command the agent runs itself
+- **Stop command** - terminate the command's process, when it's still running
+
+### ACP Terminals
+
+An ACP agent on the same machine as Neovim can ask CodeCompanion to run a command. CodeCompanion starts it in a terminal buffer and reports the rendered output and exit status back to the agent. The command follows the active approval mode before it starts, and its `cwd` must be inside the current working directory.
+
+Commands the agent runs in its own environment have no terminal for CodeCompanion to attach to. Those cards show the captured output and offer View command snapshot, which opens a read-only buffer with the command and the output the agent reported.
+
+> [!IMPORTANT]
+> ACP doesn't transport files or processes. The `terminal` and `fs` capabilities assume the agent and Neovim share a machine, a filesystem and a shell. Don't use them with a remote agent
+
 ## Keymaps
 
 Press `?` in a chat buffer to list every keymap. The defaults in normal mode are:
@@ -164,13 +202,17 @@ Press `?` in a chat buffer to list every keymap. The defaults in normal mode are
 | `<C-c>` | `close` | Close the chat buffer |
 | `q` | `stop` | Stop the current request |
 | `ga` | `change_adapter` | Change adapter and model |
+| `g+` | `attach_context` | Attach the current buffer or all open buffers, or remove attached context |
+| `gA` | `activity` | Show actions for the activity card under the cursor |
 | `gba` | `sync_all` | Toggle live-syncing of a context item |
 | `gbd` | `sync_diff` | Toggle diff-only syncing of a context item |
 | `gc` | `codeblock` | Insert an empty codeblock |
 | `gd` | `debug` | Open the debug window |
 | `gf` | `fold_code` | Fold all codeblocks |
+| `gF` | `changed_files` | Review files changed by this chat |
 | `gm` | `_btw` | Send a follow-up while the LLM is running |
 | `gM` | `rules` | Remove rules from the chat |
+| `gO` | `agent_options` | Change an effort or agent option |
 | `gr` | `regenerate` | Regenerate the last response |
 | `gR` | `goto_file_under_cursor` | Open the file path under the cursor |
 | `gs` | `system_prompt` | Toggle the system prompt on and off |
@@ -221,3 +263,9 @@ require("codecompanion").setup({
 ```
 
 The block mirrors the adapter's `schema` table. Edit a value and it's used from the next response onwards.
+
+## Limitations
+
+Terminal output is the text Neovim rendered in the terminal buffer, not the exact bytes the command wrote. Styling, control sequences and long wrapped lines can differ from the raw output.
+
+A command the agent runs itself stays opaque. The snapshot only shows what the agent reports, and CodeCompanion can't stop or inspect the process beyond that.

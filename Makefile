@@ -1,5 +1,11 @@
 all: format docs test
 
+NVIM ?= nvim
+TREE_SITTER ?= tree-sitter
+LUACHECK ?= $(or $(shell command -v luacheck 2>/dev/null),deps/luacheck/bin/luacheck)
+
+.PHONY: check_lint_env check_test_env lint
+
 docs: deps/panvimdoc
 	@echo Generating Docs...
 	@pandoc \
@@ -25,13 +31,25 @@ format:
 	@echo Formatting...
 	@stylua tests/ lua/ -f ./stylua.toml
 
-test: deps
-	@echo Testing...
-	LC_ALL=C nvim --headless --noplugin -u ./scripts/minimal_init.lua -c "lua MiniTest.run()"
+lint: check_lint_env
+	@echo Linting...
+	@$(LUACHECK) lua/
 
-test_file: deps
+check_lint_env:
+	@command -v "$(LUACHECK)" >/dev/null || { echo "luacheck executable not found: $(LUACHECK) (install with: luarocks install luacheck)"; exit 1; }
+
+test: deps check_test_env
+	@echo Testing...
+	LC_ALL=C $(NVIM) --headless --noplugin -u ./scripts/minimal_init.lua -c "lua MiniTest.run()"
+
+test_file: deps check_test_env
 	@echo Testing File...
-	LC_ALL=C nvim --headless --noplugin -u ./scripts/minimal_init.lua -c "lua MiniTest.run_file('$(FILE)')"
+	LC_ALL=C $(NVIM) --headless --noplugin -u ./scripts/minimal_init.lua -c "lua MiniTest.run_file('$(FILE)')"
+
+check_test_env:
+	@command -v "$(NVIM)" >/dev/null || { echo "Neovim executable not found: $(NVIM)"; exit 1; }
+	@$(NVIM) --headless --noplugin -u NONE -c 'lua if vim.fn.has("nvim-0.12") == 0 then print("CodeCompanion tests require Neovim 0.12 or later") vim.cmd.cquit(1) else vim.cmd.quit() end'
+	@command -v "$(TREE_SITTER)" >/dev/null || { echo "Tree-sitter CLI is required (Arch/CachyOS: sudo pacman -S tree-sitter-cli)"; exit 1; }
 
 deps: deps/plenary.nvim deps/nvim-treesitter deps/mini.nvim deps/panvimdoc
 	@echo Pulling...

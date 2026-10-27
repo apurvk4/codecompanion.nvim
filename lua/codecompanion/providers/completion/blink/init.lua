@@ -196,19 +196,19 @@ function M:execute(ctx, item, callback, default_implementation)
 
   -- Slash commands expect the command info to be in the item directly
   -- rather than in the data field, so we copy
-  local item = vim.deepcopy(item)
-  for k, v in pairs(item.data) do
-    item[k] = v
+  local command_item = vim.deepcopy(item)
+  for k, v in pairs(command_item.data) do
+    command_item[k] = v
   end
 
   local slash_commands = require("codecompanion.interactions.chat.slash_commands")
   if completion.interaction_type() == "cli" then
-    slash_commands.new():execute_cli(item, function(paths)
+    slash_commands.new():execute_cli(command_item, function(paths)
       slash_commands.insert_path(ctx.bufnr, paths)
     end)
   else
     local chat = require("codecompanion").buf_get_chat(ctx.bufnr)
-    slash_commands.run(item, chat)
+    slash_commands.run(command_item, chat)
   end
 
   callback()

@@ -813,4 +813,248 @@ T["ACP Responses"]["error response notifies active prompt"] = function()
   h.eq(result.error_message, "LLM provider error: quota exceeded")
 end
 
+T["ACP Responses"]["terminal methods create, read, wait, kill and release a command"] = function()
+  local result = child.lua([[
+    local Approvals = require("codecompanion.interactions.chat.tools.approvals")
+    local bufnr = vim.api.nvim_get_current_buf()
+    Approvals:set_mode(bufnr, { mode = "yolo" })
+
+    local connection = create_test_connection()
+    connection.session_id = "test-session-123"
+    connection.chat = { id = "chat-1", bufnr = bufnr }
+
+    local sent = {}
+    function connection:write_message(data)
+      table.insert(sent, vim.trim(data))
+      return true
+    end
+
+    local next_id = 0
+    local function send(method, params)
+      next_id = next_id + 1
+      connection:buffer_stdout_and_dispatch(vim.json.encode({
+        jsonrpc = "2.0",
+        id = next_id,
+        method = method,
+        params = params,
+      }) .. "\n")
+      return vim.json.decode(sent[#sent])
+    end
+
+    local function reply(response)
+      return {
+        has_result = response.result ~= nil,
+        error = response.error and response.error.message or nil,
+      }
+    end
+
+    local created = send("terminal/create", {
+      sessionId = "test-session-123",
+      command = "sh",
+      args = { "-c", "printf 'hello\n'" },
+    })
+    local terminal_id = created.result and created.result.terminalId
+
+    vim.wait(2000, function()
+      local output = send("terminal/output", {
+        sessionId = "test-session-123",
+        terminalId = terminal_id,
+      })
+      return output.result and output.result.exitStatus ~= nil
+    end)
+
+    local output = send("terminal/output", {
+      sessionId = "test-session-123",
+      terminalId = terminal_id,
+    })
+
+    local before_wait = #sent
+    send("terminal/wait_for_exit", { sessionId = "test-session-123", terminalId = terminal_id })
+    vim.wait(2000, function()
+      return #sent > before_wait
+    end)
+    local waited = vim.json.decode(sent[#sent])
+
+    local long_running = send("terminal/create", {
+      sessionId = "test-session-123",
+      command = "sh",
+      args = { "-c", "sleep 5" },
+    })
+    local long_id = long_running.result and long_running.result.terminalId
+
+    local killed = send("terminal/kill", { sessionId = "test-session-123", terminalId = long_id })
+
+    local before_stop = #sent
+    send("terminal/wait_for_exit", { sessionId = "test-session-123", terminalId = long_id })
+    vim.wait(2000, function()
+      return #sent > before_stop
+    end)
+    local stopped = vim.json.decode(sent[#sent])
+
+    local after_kill = send("terminal/output", { sessionId = "test-session-123", terminalId = long_id })
+    local released = send("terminal/release", { sessionId = "test-session-123", terminalId = long_id })
+    local after_release = send("terminal/output", { sessionId = "test-session-123", terminalId = long_id })
+    local released_again = send("terminal/release", { sessionId = "test-session-123", terminalId = long_id })
+
+    send("terminal/release", { sessionId = "test-session-123", terminalId = terminal_id })
+
+    return {
+      terminal_id = terminal_id,
+      created = reply(created),
+      output = output.result and output.result.output,
+      output_truncated = output.result and output.result.truncated,
+      output_exit_code = output.result and output.result.exitStatus and output.result.exitStatus.exitCode,
+      waited = reply(waited),
+      wait_exit_code = waited.result and waited.result.exitCode,
+      killed = reply(killed),
+      stopped = reply(stopped),
+      stopped_exit_code = stopped.result and stopped.result.exitCode,
+      after_kill = reply(after_kill),
+      after_kill_output = after_kill.result and after_kill.result.output,
+      released = reply(released),
+      after_release = reply(after_release),
+      released_again = reply(released_again),
+    }
+  ]])
+
+  h.is_true(result.terminal_id ~= nil)
+  h.is_true(result.created.has_result)
+  h.eq("hello", result.output)
+  h.is_false(result.output_truncated)
+  h.eq(0, result.output_exit_code)
+  h.is_true(result.waited.has_result)
+  h.eq(0, result.wait_exit_code)
+  h.is_true(result.killed.has_result)
+  h.is_true(result.stopped.has_result)
+  h.is_true(result.stopped_exit_code ~= nil)
+  h.is_true(result.after_kill.has_result)
+  h.is_true(result.released.has_result)
+  h.is_false(result.after_release.has_result)
+  h.is_true(result.after_release.error ~= nil)
+  h.is_true(result.released_again.error ~= nil)
+end
+
+T["ACP Responses"]["terminal methods reject an unknown session and terminal"] = function()
+  local result = child.lua([[
+    local connection = create_test_connection()
+    connection.session_id = "test-session-123"
+
+    local sent = {}
+    function connection:write_message(data)
+      table.insert(sent, vim.trim(data))
+      return true
+    end
+
+    local function send(method, params)
+      connection:buffer_stdout_and_dispatch(vim.json.encode({
+        jsonrpc = "2.0",
+        id = 1,
+        method = method,
+        params = params,
+      }) .. "\n")
+      return vim.json.decode(sent[#sent])
+    end
+
+    local unknown_session = send("terminal/output", {
+      sessionId = "other-session",
+      terminalId = "term_1",
+    })
+    local unknown_terminal = send("terminal/output", {
+      sessionId = "test-session-123",
+      terminalId = "term_404",
+    })
+
+    return {
+      session_error = unknown_session.error and unknown_session.error.message or nil,
+      terminal_error = unknown_terminal.error and unknown_terminal.error.message or nil,
+    }
+  ]])
+
+  h.is_true(result.session_error ~= nil)
+  h.is_true(result.terminal_error ~= nil)
+end
+
+T["ACP Responses"]["terminal/create rejects an outside cwd and a rejected approval"] = function()
+  local result = child.lua([[
+    local Approvals = require("codecompanion.interactions.chat.tools.approvals")
+    local Terminal = require("codecompanion.interactions.chat.terminal")
+    local bufnr = vim.api.nvim_get_current_buf()
+    local connection = create_test_connection()
+    connection.session_id = "test-session-123"
+    connection.chat = { id = "chat-1", bufnr = bufnr }
+
+    local sent = {}
+    function connection:write_message(data)
+      table.insert(sent, vim.trim(data))
+      return true
+    end
+
+    local function send(params)
+      connection:buffer_stdout_and_dispatch(vim.json.encode({
+        jsonrpc = "2.0",
+        id = 1,
+        method = "terminal/create",
+        params = params,
+      }) .. "\n")
+      return vim.json.decode(sent[#sent])
+    end
+
+    local outside = send({
+      sessionId = "test-session-123",
+      command = "sh",
+      args = { "-c", "true" },
+      cwd = vim.fn.tempname(),
+    })
+
+    Approvals:set_mode(bufnr, { mode = "ask" })
+    local original_select = vim.ui.select
+    local offered = nil
+    vim.ui.select = function(items, _, on_choice)
+      offered = items
+      on_choice("Reject")
+    end
+    local rejected = send({
+      sessionId = "test-session-123",
+      command = "sh",
+      args = { "-c", "true" },
+    })
+    vim.ui.select = original_select
+
+    return {
+      outside_error = outside.error and outside.error.message or nil,
+      offered = offered,
+      rejected_error = rejected.error and rejected.error.message or nil,
+      sessions = Terminal.sessions(),
+    }
+  ]])
+
+  h.is_true(result.outside_error ~= nil)
+  h.eq({ "Allow once", "Allow always", "Reject" }, result.offered)
+  h.is_true(result.rejected_error ~= nil)
+  h.eq({}, result.sessions)
+end
+
+T["ACP Responses"]["advertises the terminal capability unless an adapter overrides it"] = function()
+  local result = child.lua([[
+    test_adapter.commands = { default = { "node", "test-acp-cli" } }
+
+    local connection = create_test_connection()
+    local adapter = connection:prepare_adapter()
+
+    test_adapter.parameters.clientCapabilities.terminal = false
+    local overridden = create_test_connection():prepare_adapter()
+    test_adapter.parameters.clientCapabilities.terminal = nil
+
+    return {
+      terminal = adapter.parameters.clientCapabilities.terminal,
+      fs_read = adapter.parameters.clientCapabilities.fs.readTextFile,
+      overridden = overridden.parameters.clientCapabilities.terminal,
+    }
+  ]])
+
+  h.is_true(result.terminal)
+  h.is_true(result.fs_read)
+  h.is_false(result.overridden)
+end
+
 return T

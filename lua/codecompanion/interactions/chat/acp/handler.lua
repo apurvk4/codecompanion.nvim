@@ -1,4 +1,6 @@
+local Activity = require("codecompanion.interactions.chat.ui.activity")
 local Queue = require("codecompanion.utils.queue")
+local Terminal = require("codecompanion.interactions.chat.terminal")
 
 local async = require("codecompanion.utils.async")
 local config = require("codecompanion.config")
@@ -14,7 +16,6 @@ local watch = require("codecompanion.interactions.shared.watch")
 ---@field reasoning table Reasoning output from the Agent
 ---@field tools table<string, table> Cache of tool calls by their ID
 ---@field edits table<string, { path: string, line?: number }[]> Files each tool call has edited, by tool call ID
----@field ui_state table<string, table> Cache of tool call UI states (line_number, icon_id) by tool call ID
 ---@field _permission { queue: CodeCompanion.Queue, active: boolean, respond: function|nil } Internal state for managing permission requests
 local ACPHandler = {}
 
@@ -27,7 +28,6 @@ function ACPHandler.new(chat)
     reasoning = {},
     tools = {},
     edits = {},
-    ui_state = {},
     _permission = {
       active = false,
       queue = Queue.new(),
@@ -54,20 +54,85 @@ end
 
 ---The files a tool call update edits, alongside locations and diffs
 ---@param tool_call table
----@return { path: string, line?: number }[]
+---@return { path: string, line?: number, added?: number, removed?: number }[]
 local function touched_files(tool_call)
   local touched = {}
+
+  local function count_changes(old_text, new_text)
+    old_text = type(old_text) == "string" and old_text or ""
+    new_text = type(new_text) == "string" and new_text or ""
+    local diff = vim.diff(old_text, new_text, { result_type = "unified" })
+    local added, removed = 0, 0
+    for line in diff:gmatch("[^\n]+") do
+      if line:sub(1, 1) == "+" and line:sub(1, 3) ~= "+++" then
+        added = added + 1
+      elseif line:sub(1, 1) == "-" and line:sub(1, 3) ~= "---" then
+        removed = removed + 1
+      end
+    end
+    return added, removed
+  end
 
   for _, location in ipairs(tool_call.locations or {}) do
     table.insert(touched, { path = location.path, line = location.line })
   end
   for _, content in ipairs(tool_call.content or {}) do
     if content.type == "diff" then
-      table.insert(touched, { path = content.path })
+      local added, removed = count_changes(content.oldText, content.newText)
+      table.insert(touched, { path = content.path, added = added, removed = removed })
     end
   end
 
   return touched
+end
+
+---The tool result text the agent supplied for a tool call
+---@param tool_call table
+---@return string[]
+local function tool_output(tool_call)
+  local output = {}
+
+  if type(tool_call.rawOutput) == "string" and tool_call.rawOutput ~= "" then
+    table.insert(output, tool_call.rawOutput)
+  end
+
+  for _, content in ipairs(tool_call.content or {}) do
+    if type(content) == "table" and content.type == "text" and type(content.text) == "string" then
+      table.insert(output, content.text)
+    end
+  end
+
+  return output
+end
+
+---The terminal a tool call content block points at
+---@param tool_call table
+---@return string|nil
+local function terminal_id_for(tool_call)
+  for _, content in ipairs(tool_call.content or {}) do
+    if type(content) == "table" and content.type == "terminal" and type(content.terminalId) == "string" then
+      return content.terminalId
+    end
+  end
+end
+
+---The command an execute tool call reports, taken from its input or its title
+---@param tool_call table
+---@param title string
+---@return string
+local function command_for(tool_call, title)
+  local raw = tool_call.rawInput
+  if type(raw) == "table" and type(raw.command) == "string" and raw.command ~= "" then
+    local args = raw.args
+    if type(args) == "table" and #args > 0 then
+      return raw.command .. " " .. table.concat(args, " ")
+    end
+    return raw.command
+  end
+  if type(tool_call.title) == "string" and tool_call.title ~= "" then
+    return tool_call.title
+  end
+  return title
 end
 
 ---Submit payload to ACP, registering the request on the chat before connecting
@@ -285,6 +350,8 @@ function ACPHandler:track_edits(id, tool_call)
 
     if existing then
       existing.line = existing.line or file.line
+      existing.added = file.added or existing.added
+      existing.removed = file.removed or existing.removed
     elseif type(file.path) == "string" and file.path ~= "" then
       table.insert(edits, file)
     end
@@ -310,7 +377,53 @@ function ACPHandler:flush_edits(id, tool_call)
   end
 
   for _, file in ipairs(edits or {}) do
-    utils.fire("FileEdited", { path = file.path, tool = self.chat.adapter.name, line = file.line })
+    utils.fire("FileEdited", {
+      path = file.path,
+      tool = self.chat.adapter.name,
+      line = file.line,
+      added = file.added,
+      removed = file.removed,
+      chat_id = self.chat.id,
+      chat_bufnr = self.chat.bufnr,
+      tool_call_id = id,
+    })
+  end
+end
+
+---Write a tool call to its activity card, with a terminal or a read-only snapshot
+---@param chat CodeCompanion.Chat
+---@param tool_call table
+---@param id string|nil
+---@param title string
+---@return nil
+local function render_tool_call(chat, tool_call, id, title)
+  local terminal_id = terminal_id_for(tool_call)
+  local output = tool_output(tool_call)
+  if terminal_id then
+    local terminal_output = Terminal.output(terminal_id)
+    if terminal_output and terminal_output.output ~= "" then
+      output = terminal_output.output
+    end
+  end
+  local status = tool_call.status or "in_progress"
+
+  local card = Activity.upsert(chat, {
+    id = id,
+    title = title,
+    status = status,
+    output = output,
+    kind = tool_call.kind,
+    external = terminal_id == nil,
+    terminal_id = terminal_id,
+    terminal_bufnr = terminal_id and Terminal.buffer(terminal_id) or nil,
+  })
+
+  if tool_call.kind == "execute" and not terminal_id and id then
+    Activity.set_snapshot(chat, card.id, {
+      command = command_for(tool_call, title),
+      output = output,
+      status = status,
+    })
   end
 end
 
@@ -319,20 +432,25 @@ end
 ---@return nil
 function ACPHandler:process_tool_call(tool_call)
   local id = tool_call.toolCallId
-
-  local merged = merge_tool_call(self.tools[id], tool_call)
-  tool_call = merged
-
-  self:track_edits(id, tool_call)
-
-  -- Cache or cleanup
-  if tool_call.status == "completed" then
-    self.tools[id] = nil
-  else
-    self.tools[id] = merged
+  if type(id) ~= "string" or id == "" then
+    id = nil
   end
 
-  self:flush_edits(id, tool_call)
+  local merged = merge_tool_call(id and self.tools[id] or nil, tool_call)
+  tool_call = merged
+
+  if id then
+    self:track_edits(id, tool_call)
+
+    -- Cache or cleanup
+    if tool_call.status == "completed" then
+      self.tools[id] = nil
+    else
+      self.tools[id] = merged
+    end
+
+    self:flush_edits(id, tool_call)
+  end
 
   -- Pending tool calls are awaiting approval or streaming input, so hold them
   -- back from the buffer until the agent moves them out of the pending state
@@ -345,46 +463,7 @@ function ACPHandler:process_tool_call(tool_call)
     content = "[Error formatting tool output]"
   end
 
-  -- If the tool call has already written output to the chat buffer, update the
-  -- existing line rather than adding a new one
-  local cached = self.ui_state[id]
-  if cached then
-    local update_ok, _, new_icon_id = pcall(self.chat.update_buf_line, self.chat, {
-      line_number = cached.line_number,
-      content = content,
-      status = tool_call.status,
-      icon_id = cached.icon_id,
-      priority = 120,
-      virt_text_pos = "inline",
-    })
-
-    if update_ok then
-      if tool_call.status == "completed" then
-        self.ui_state[id] = nil
-      elseif new_icon_id then
-        cached.icon_id = new_icon_id
-      end
-      return
-    end
-
-    if tool_call.status == "completed" then
-      self.ui_state[id] = nil
-    end
-    log:debug("[ACP::Handler] Failed to update tool call line for toolCallId %s", id)
-  end
-
-  local line_number, icon_id = self.chat:add_buf_message({
-    role = config.constants.LLM_ROLE,
-    content = content,
-  }, {
-    status = tool_call.status or "in_progress",
-    virt_text_pos = "inline",
-    tools = { call_id = id },
-    kind = tool_call.kind,
-    type = self.chat.MESSAGE_TYPES.TOOL_MESSAGE,
-  })
-
-  self.ui_state[id] = { line_number = line_number, icon_id = icon_id }
+  render_tool_call(self.chat, tool_call, id, content)
 end
 
 ---Queue a permission request and process when ready

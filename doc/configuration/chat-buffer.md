@@ -58,6 +58,25 @@ require("codecompanion").setup({
 })
 ```
 
+### Composer and History
+
+The composer shows the model, effort, agent options and approval mode below the prompt. Opening a fresh chat shows recent sessions in the chat buffer. Both are enabled by default:
+
+```lua
+require("codecompanion").setup({
+  interactions = {
+    chat = {
+      opts = {
+        composer_controls = true, -- Show model, agent options and approval controls
+        session_picker = true, -- Show recent sessions when opening a fresh chat
+      },
+    },
+  },
+})
+```
+
+With `composer_controls = false`, the chat buffer keeps its standard single prompt area. With `session_picker = false`, a fresh chat opens on the standard intro message instead of the session list.
+
 ## Context Formatters
 
 Some files are a poor fit for an LLM as they are. A [Jupyter Notebook](https://jupyter.org/) is a large JSON document with markdown, code and base64 images embedded in it, which fills the context window quickly. A _context formatter_ changes a file's content before the LLM sees it.

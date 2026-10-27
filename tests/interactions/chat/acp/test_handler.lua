@@ -677,6 +677,13 @@ T["ACPHandler"]["Edited Files"]["fires FileEdited when an edit tool call complet
       path = events[1] and events[1].path,
       line = events[1] and events[1].line,
       tool = events[1] and events[1].tool,
+      chat_id = events[1] and events[1].chat_id,
+      chat_bufnr = events[1] and events[1].chat_bufnr,
+      tool_call_id = events[1] and events[1].tool_call_id,
+      added = events[1] and events[1].added,
+      removed = events[1] and events[1].removed,
+      expected_chat_id = chat.id,
+      expected_chat_bufnr = chat.bufnr,
     }
   ]])
 
@@ -684,6 +691,11 @@ T["ACPHandler"]["Edited Files"]["fires FileEdited when an edit tool call complet
   h.eq("/tmp/version.txt", result.path)
   h.eq(1, result.line)
   h.eq("test_acp", result.tool)
+  h.eq(result.expected_chat_id, result.chat_id)
+  h.eq(result.expected_chat_bufnr, result.chat_bufnr)
+  h.eq("toolu_0145UJoLG4Q6dsWnaTu8fr3n", result.tool_call_id)
+  h.eq(1, result.added)
+  h.eq(1, result.removed)
 end
 
 T["ACPHandler"]["Edited Files"]["fires FileEdited when a later update empties the locations"] = function()
@@ -1178,6 +1190,317 @@ T["ACPHandler"]["Config Options"]["reflects config option changes in metadata"] 
   h.eq("default", result.mode_before)
   h.eq("plan", result.mode_after)
   h.eq("Plan Mode", result.name_after)
+end
+
+T["ACPHandler"]["Activity Cards"] = new_set()
+
+T["ACPHandler"]["Activity Cards"]["updates one card for repeated tool call IDs"] = function()
+  local result = child.lua([[
+    local chat = h.setup_chat_buffer({}, {
+      name = "test_acp",
+      config = {
+        name = "test_acp",
+        type = "acp",
+        handlers = { form_messages = function(a, m) return m end }
+      }
+    })
+
+    local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
+    local Activity = require("codecompanion.interactions.chat.ui.activity")
+    local handler = ACPHandler.new(chat)
+
+    handler:process_tool_call({
+      toolCallId = "toolu_activity",
+      sessionUpdate = "tool_call",
+      status = "in_progress",
+      title = "a.txt",
+      kind = "read",
+    })
+    local after_start = vim.api.nvim_buf_get_lines(chat.bufnr, 0, -1, true)
+
+    handler:process_tool_call({
+      toolCallId = "toolu_activity",
+      sessionUpdate = "tool_call_update",
+      status = "completed",
+      title = "a.txt",
+      kind = "read",
+      rawOutput = "contents of a.txt",
+    })
+    local after_update = vim.api.nvim_buf_get_lines(chat.bufnr, 0, -1, true)
+
+    local cards = Activity.cards(chat)
+    local card = cards[1]
+    local output = {
+      count = #cards,
+      id = card and card.id,
+      status = card and card.status,
+      captured = card and card.output,
+      start_line_count = #after_start,
+      update_line_count = #after_update,
+    }
+
+    Activity.cleanup(chat.bufnr)
+    return output
+  ]])
+
+  h.eq(1, result.count)
+  h.eq("toolu_activity", result.id)
+  h.eq("success", result.status)
+  h.eq({ "contents of a.txt" }, result.captured)
+  h.eq(result.start_line_count, result.update_line_count)
+end
+
+T["ACPHandler"]["Activity Cards"]["renders an append-only card when the tool call has no ID"] = function()
+  local result = child.lua([[
+    local chat = h.setup_chat_buffer({}, {
+      name = "test_acp",
+      config = {
+        name = "test_acp",
+        type = "acp",
+        handlers = { form_messages = function(a, m) return m end }
+      }
+    })
+
+    local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
+    local Activity = require("codecompanion.interactions.chat.ui.activity")
+    local handler = ACPHandler.new(chat)
+
+    handler:process_tool_call({
+      sessionUpdate = "tool_call",
+      status = "in_progress",
+      title = "b.txt",
+      kind = "read",
+    })
+
+    local cards = Activity.cards(chat)
+    local card = cards[1]
+    local output = {
+      count = #cards,
+      append_only = card and card.append_only,
+      title = card and card.title,
+    }
+
+    Activity.cleanup(chat.bufnr)
+    return output
+  ]])
+
+  h.eq(1, result.count)
+  h.is_true(result.append_only)
+  h.eq("Read: b.txt", result.title)
+end
+
+T["ACPHandler"]["Activity Cards"]["folds agent reasoning when a tool call leaves it"] = function()
+  local result = child.lua([[
+    local chat = h.setup_chat_buffer({}, {
+      name = "test_acp",
+      config = {
+        name = "test_acp",
+        type = "acp",
+        handlers = { form_messages = function(a, m) return m end }
+      }
+    })
+
+    local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
+    local Activity = require("codecompanion.interactions.chat.ui.activity")
+    local handler = ACPHandler.new(chat)
+
+    handler:handle_thought_chunk("I should read the file first.")
+    handler:process_tool_call({
+      toolCallId = "toolu_reasoning",
+      sessionUpdate = "tool_call",
+      status = "in_progress",
+      title = "c.txt",
+      kind = "read",
+    })
+
+    vim.wait(250, function() return false end)
+
+    local bufnr = chat.bufnr
+    local folds = require("codecompanion.interactions.chat.ui.folds").fold_summaries[bufnr] or {}
+
+    local header_row0
+    for i, line in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, true)) do
+      if line == "### Reasoning" then
+        header_row0 = i - 1
+        break
+      end
+    end
+
+    local start0 = header_row0 and header_row0 + 1 or nil
+    local fold = start0 and folds[start0] or nil
+    local output = {
+      header_row0 = header_row0,
+      fold_type = fold and fold.type,
+      is_closed = start0 and vim.fn.foldclosed(start0 + 2) ~= -1 or false,
+    }
+
+    Activity.cleanup(bufnr)
+    return output
+  ]])
+
+  h.not_eq(nil, result.header_row0)
+  h.eq("reasoning", result.fold_type)
+  h.is_true(result.is_closed)
+end
+
+T["ACPHandler"]["Activity Cards"]["attaches a terminal content block to its card"] = function()
+  local result = child.lua([[
+    local chat = h.setup_chat_buffer({}, {
+      name = "test_acp",
+      config = {
+        name = "test_acp",
+        type = "acp",
+        handlers = { form_messages = function(a, m) return m end }
+      }
+    })
+
+    local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
+    local Activity = require("codecompanion.interactions.chat.ui.activity")
+    local Terminal = require("codecompanion.interactions.chat.terminal")
+    local handler = ACPHandler.new(chat)
+
+    local terminal_id = Terminal.create({ command = "sh", args = { "-c", "sleep 5" }, owner = chat.id })
+    handler:process_tool_call({
+      toolCallId = "toolu_terminal",
+      sessionUpdate = "tool_call",
+      status = "in_progress",
+      title = "Run tests",
+      kind = "execute",
+      content = { { type = "terminal", terminalId = terminal_id } },
+    })
+
+    local card = Activity.get(chat, "toolu_terminal")
+    local actions = vim.tbl_map(function(action)
+      return action.label
+    end, Activity.actions_for(card, chat))
+
+    local state = {
+      terminal_id = card and card.terminal_id,
+      terminal_bufnr = card and card.terminal_bufnr,
+      expected_bufnr = Terminal.buffer(terminal_id),
+      external = card and card.external,
+      has_open_terminal = vim.tbl_contains(actions, "Open terminal"),
+      has_snapshot = vim.tbl_contains(actions, "View command snapshot"),
+    }
+
+    Terminal.release(terminal_id)
+    Activity.cleanup(chat.bufnr)
+    return state
+  ]])
+
+  h.not_eq(nil, result.terminal_id)
+  h.eq(result.expected_bufnr, result.terminal_bufnr)
+  h.is_false(result.external)
+  h.is_true(result.has_open_terminal)
+  h.is_false(result.has_snapshot)
+end
+
+T["ACPHandler"]["Activity Cards"]["shows a read-only snapshot for an agent-owned command"] = function()
+  local result = child.lua([[
+    local chat = h.setup_chat_buffer({}, {
+      name = "test_acp",
+      config = {
+        name = "test_acp",
+        type = "acp",
+        handlers = { form_messages = function(a, m) return m end }
+      }
+    })
+
+    local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
+    local Activity = require("codecompanion.interactions.chat.ui.activity")
+    local handler = ACPHandler.new(chat)
+
+    handler:process_tool_call({
+      toolCallId = "toolu_exec",
+      sessionUpdate = "tool_call",
+      status = "in_progress",
+      title = "Execute: ls",
+      kind = "execute",
+      rawInput = { command = "ls", args = { "-la" } },
+    })
+
+    local card = Activity.get(chat, "toolu_exec")
+    local first_bufnr = card.snapshot_bufnr
+    local running = table.concat(vim.api.nvim_buf_get_lines(first_bufnr, 0, -1, false), "\n")
+
+    handler:process_tool_call({
+      toolCallId = "toolu_exec",
+      sessionUpdate = "tool_call_update",
+      status = "completed",
+      rawOutput = "a.txt\nb.txt",
+    })
+
+    card = Activity.get(chat, "toolu_exec")
+    local finished = table.concat(vim.api.nvim_buf_get_lines(first_bufnr, 0, -1, false), "\n")
+    local actions = vim.tbl_map(function(action)
+      return action.label
+    end, Activity.actions_for(card, chat))
+
+    local state = {
+      same_buffer = card.snapshot_bufnr == first_bufnr,
+      has_header = running:find("Agent-owned command", 1, true) ~= nil,
+      has_command = running:find("ls -la", 1, true) ~= nil,
+      has_running_message = running:find("has not reported output yet", 1, true) ~= nil,
+      has_output = finished:find("a.txt", 1, true) ~= nil,
+      readonly = vim.bo[first_bufnr].readonly,
+      nomodifiable = vim.bo[first_bufnr].modifiable == false,
+      buftype = vim.bo[first_bufnr].buftype,
+      has_snapshot_action = vim.tbl_contains(actions, "View command snapshot"),
+      buffer_valid = vim.api.nvim_buf_is_valid(first_bufnr),
+    }
+
+    Activity.cleanup(chat.bufnr)
+    state.deleted = not vim.api.nvim_buf_is_valid(first_bufnr)
+    return state
+  ]])
+
+  h.is_true(result.same_buffer)
+  h.is_true(result.has_header)
+  h.is_true(result.has_command)
+  h.is_true(result.has_running_message)
+  h.is_true(result.has_output)
+  h.is_true(result.readonly)
+  h.is_true(result.nomodifiable)
+  h.eq("nofile", result.buftype)
+  h.is_true(result.has_snapshot_action)
+  h.is_true(result.buffer_valid)
+  h.is_true(result.deleted)
+end
+
+T["ACPHandler"]["Activity Cards"]["says when an agent-owned command reported no output"] = function()
+  local result = child.lua([[
+    local chat = h.setup_chat_buffer({}, {
+      name = "test_acp",
+      config = {
+        name = "test_acp",
+        type = "acp",
+        handlers = { form_messages = function(a, m) return m end }
+      }
+    })
+
+    local ACPHandler = require("codecompanion.interactions.chat.acp.handler")
+    local Activity = require("codecompanion.interactions.chat.ui.activity")
+    local handler = ACPHandler.new(chat)
+
+    handler:process_tool_call({
+      toolCallId = "toolu_quiet",
+      sessionUpdate = "tool_call_update",
+      status = "completed",
+      title = "Execute: true",
+      kind = "execute",
+    })
+
+    local card = Activity.get(chat, "toolu_quiet")
+    local lines = table.concat(vim.api.nvim_buf_get_lines(card.snapshot_bufnr, 0, -1, false), "\n")
+    local has_message = lines:find("did not report any output", 1, true) ~= nil
+    local has_command = lines:find("Execute: true", 1, true) ~= nil
+
+    Activity.cleanup(chat.bufnr)
+    return { has_message = has_message, has_command = has_command }
+  ]])
+
+  h.is_true(result.has_message)
+  h.is_true(result.has_command)
 end
 
 return T

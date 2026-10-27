@@ -12,6 +12,7 @@
 ---@field callbacks table<string, (fun(chat: CodeCompanion.Chat, ...: any): any)[]> A table of callback functions that are executed at various points (on_created, on_before_submit, on_submitted, on_tool_output, on_ready, on_completed, on_cancelled, on_closed)
 ---@field context CodeCompanion.Chat.Context
 ---@field context_items? table<CodeCompanion.Chat.Context> Context which is sent to the LLM e.g. buffers, slash command output
+---@field composer? { bufnr: number, winnr: number } The bottom prompt composer window
 ---@field current_request table|nil The current request being executed
 ---@field cycle number Records the number of turn-based interactions (User -> LLM) that have taken place
 ---@field editor_context? CodeCompanion.EditorContext The editor context available to the user
@@ -441,7 +442,7 @@ local function init_adapter(chat, args)
       if args.acp_command then
         chat.adapter.commands.selected = chat.adapter.commands[args.acp_command]
       end
-      helpers.create_acp_connection(chat)
+      helpers.create_acp_connection(chat, args.on_acp_ready, { defer_session = true })
     end)
   end
 
@@ -654,6 +655,8 @@ function Chat.new(args)
   })
 
   init_components(self, args)
+  require("codecompanion.interactions.chat.composer_controls").setup(self)
+  require("codecompanion.interactions.chat.changed_files").setup(self)
   self:update_metadata()
 
   local default_servers = config.mcp.opts and config.mcp.opts.default_servers
@@ -832,7 +835,7 @@ function Chat:change_adapter(args)
   self.ui.adapter = self.adapter
 
   if self.adapter.type == "acp" then
-    helpers.create_acp_connection(self, args.callback)
+    helpers.create_acp_connection(self, args.callback, { defer_session = true })
     helpers.remove_mcp_tools(self)
   else
     if args.callback then
@@ -1831,6 +1834,10 @@ function Chat:close()
     last_chat = nil
   end
 
+  if self.composer then
+    require("codecompanion.interactions.chat.composer_controls").close(self)
+  end
+
   utils.fire("ChatClosed", { bufnr = self.bufnr, id = self.id })
   utils.fire("ChatAdapter", { bufnr = self.bufnr, id = self.id, adapter = nil })
   utils.fire("ChatModel", { bufnr = self.bufnr, id = self.id, model = nil })
@@ -1844,6 +1851,8 @@ function Chat:close()
   _G.codecompanion_chat_metadata[self.bufnr] = nil
   chats[self.bufnr] = nil
   approvals:reset(self.bufnr)
+  require("codecompanion.interactions.chat.terminal").release_for_owner(self.id)
+  require("codecompanion.interactions.chat.ui.activity").cleanup(self.bufnr)
   registry.remove(self.bufnr)
   pcall(api.nvim_buf_delete, self.bufnr, { force = true })
   if self.aug then
@@ -2018,6 +2027,8 @@ function Chat:clear()
 
   self.watchers:clear()
   self.tool_registry:clear()
+  require("codecompanion.interactions.chat.terminal").release_for_owner(self.id)
+  require("codecompanion.interactions.chat.ui.activity").cleanup(self.bufnr)
 
   log:trace("Clearing chat buffer")
   self.ui:render(self.buffer_context, self.messages, self.opts):set_intro_msg(self.intro_message)
@@ -2091,6 +2102,8 @@ function Chat:update_metadata()
       })
     end
   end
+
+  require("codecompanion.interactions.chat.composer_controls").update(self)
 end
 
 ---Set the title of the chat buffer

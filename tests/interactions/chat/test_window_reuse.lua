@@ -17,9 +17,11 @@ local T = new_set({
     pre_case = function()
       child.lua([[
         for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-          local name = vim.api.nvim_buf_get_name(bufnr)
-          if name:find("%[CodeCompanion%]") then
-            pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+          if vim.api.nvim_buf_is_valid(bufnr) then
+            local name = vim.api.nvim_buf_get_name(bufnr)
+            if name:find("%[CodeCompanion%]") then
+              pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+            end
           end
         end
         local wins = vim.api.nvim_list_wins()

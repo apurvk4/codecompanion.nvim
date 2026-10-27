@@ -510,7 +510,7 @@ function M.build(opts)
     for _, group in ipairs(groups) do
       local nearby = { path = path, file_diff = diffs[path], hunks = group.hunks }
       local sent_here = get_nearby_comments(vim.tbl_extend("force", nearby, { comments = sent }))
-      local summary = summarise({
+      local group_summary = summarise({
         file_diff = diffs[path],
         group = group,
         source = parsed and parsed.source,
@@ -528,9 +528,9 @@ function M.build(opts)
         hunks = group.hunks,
         ids = ids,
         sent = #sent_here > 0 and sent_here or nil,
-        spans = summary.spans,
+        spans = group_summary.spans,
       })
-      table.insert(lines, summary.text)
+      table.insert(lines, group_summary.text)
       rows = rows + 1
     end
   end

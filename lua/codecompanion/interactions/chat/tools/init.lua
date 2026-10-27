@@ -61,7 +61,7 @@ function Tools:_handle_tool_error(opts)
 
   log:error(opts.error_message)
 
-  local available_tools_msg = ""
+  local available_tools_msg
   if self.chat and self.chat.tool_registry and self.chat.tool_registry.in_use then
     local available_tools = vim.tbl_keys(self.chat.tool_registry.in_use)
     if next(available_tools) then
@@ -127,8 +127,8 @@ function Tools:_resolve_and_prepare_tool(tool)
       if args == "" then
         args = "{}"
       end
-      local ok, decoded = pcall(vim.json.decode, args)
-      if not ok then
+      local decode_ok, decoded = pcall(vim.json.decode, args)
+      if not decode_ok then
         log:error("Couldn't decode the tool arguments: %s", args)
         self.chat:add_tool_output(prepared_tool, {
           content = string.format('You made an error in calling the %s tool: "%s"', name, decoded),

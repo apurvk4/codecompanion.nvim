@@ -196,7 +196,20 @@ CodeCompanion.chat = function(args)
     args.callbacks = rules_cb
   end
 
-  return require("codecompanion.interactions.chat").new({
+  local should_show_sessions = config.interactions.chat.opts.session_picker
+    and not args.no_session_picker
+    and not args.subcommand
+    and not args.user_prompt
+    and vim.tbl_isempty(messages)
+
+  local chat
+  local function show_sessions()
+    if chat and vim.api.nvim_buf_is_valid(chat.bufnr) then
+      require("codecompanion.interactions.chat.session_picker").open(chat)
+    end
+  end
+
+  chat = require("codecompanion.interactions.chat").new({
     acp_command = acp_command,
     adapter = adapter,
     approval_mode = args.approval_mode,
@@ -205,10 +218,17 @@ CodeCompanion.chat = function(args)
     callbacks = args.callbacks,
     hidden = args.hidden,
     messages = has_messages and messages or nil,
+    on_acp_ready = should_show_sessions and show_sessions or nil,
     stop_context_insertion = args.stop_context_insertion,
     window_opts = args and args.window_opts,
     yolo_mode = args.yolo_mode,
   })
+
+  if should_show_sessions and chat and chat.adapter.type == "http" then
+    show_sessions()
+  end
+
+  return chat
 end
 
 ---Pick a saved session and restore it into a new chat buffer
@@ -567,8 +587,8 @@ CodeCompanion.setup = function(opts)
   -- Setup extensions
   for name, schema in pairs(config.extensions) do
     if schema.enabled ~= false then
-      local ok, ext_error = pcall(_extensions.load_extension, name, schema)
-      if not ok then
+      local loaded, ext_error = pcall(_extensions.load_extension, name, schema)
+      if not loaded then
         log:error("Error loading extension %s: %s", name, ext_error)
       end
     end

@@ -89,17 +89,17 @@ function SlashCommand:execute()
     return utils.notify("No ACP connection available", vim.log.levels.WARN)
   end
 
-  local sessions = Chat.acp_connection:session_list({
+  local acp_sessions = Chat.acp_connection:session_list({
     max_sessions = (self.config.opts and self.config.opts.max_sessions) or 500,
   })
 
-  if #sessions == 0 then
+  if #acp_sessions == 0 then
     return utils.notify("No previous sessions found", vim.log.levels.INFO)
   end
 
   local choices = {}
   local session_map = {}
-  for i, session in ipairs(sessions) do
+  for i, session in ipairs(acp_sessions) do
     table.insert(choices, format_session(session))
     session_map[i] = session
   end

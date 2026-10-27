@@ -21,8 +21,10 @@ end
 
 ---Create a file and the surrounding folders
 ---@param action {filepath: string, content: string} The action containing the filepath and content
+---@param opts { chat?: CodeCompanion.Chat, tool_call_id?: string }
 ---@return {status: "success"|"error", data: string}
-local function create(action)
+local function create(action, opts)
+  opts = opts or {}
   local filepath = vim.fs.normalize(action.filepath)
 
   local ok, error_message = validate_creation_path(filepath)
@@ -37,7 +39,23 @@ local function create(action)
     return { status = "error", data = full_error }
   end
 
-  utils.fire("FileEdited", { path = filepath, tool = "create_file" })
+  local content = action.content or ""
+  local added = 0
+  if content ~= "" then
+    added = select(2, content:gsub("\n", ""))
+    if content:sub(-1) ~= "\n" then
+      added = added + 1
+    end
+  end
+  utils.fire("FileEdited", {
+    added = added,
+    chat_bufnr = opts.chat and opts.chat.bufnr,
+    chat_id = opts.chat and opts.chat.id,
+    path = filepath,
+    removed = 0,
+    tool = "create_file",
+    tool_call_id = opts.tool_call_id,
+  })
   return {
     status = "success",
     data = fmt([[Created `%s`]], action.filepath),
@@ -62,12 +80,17 @@ return {
       end
 
       local display_path = vim.fn.fnamemodify(args.filepath, ":.")
+      local function_call = self.tool and self.tool.function_call
+      local tool_call_id = function_call and (function_call.id or (function_call["function"] or {}).id)
 
       return diff.review({
         from_lines = {},
         to_lines = vim.split(args.content or "", "\n", { plain = true }),
         apply = function()
-          opts.output_cb(create(args))
+          opts.output_cb(create(args, {
+            chat = self.chat,
+            tool_call_id = tool_call_id,
+          }))
         end,
         approved = approvals:is_approved(self.chat.bufnr, { tool_name = "create_file" }),
         chat = self.chat,

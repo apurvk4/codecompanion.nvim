@@ -702,6 +702,12 @@ If you are providing code changes, use the edit_file tool (if available to you) 
           callback = "keymaps.codeblock",
           description = "Insert an empty codeblock",
         },
+        attach_context = {
+          modes = { n = "g+" },
+          index = 8,
+          callback = "keymaps.attach_context",
+          description = "Attach the current buffer or all open buffers",
+        },
         yank_code = {
           modes = { n = "gy" },
           index = 8,
@@ -788,6 +794,24 @@ If you are providing code changes, use the edit_file tool (if available to you) 
           callback = "keymaps.yolo_mode",
           description = "Choose how tool calls are approved",
         },
+        activity = {
+          modes = { n = "gA" },
+          index = 23,
+          callback = "keymaps.activity",
+          description = "Show actions for the activity card under the cursor",
+        },
+        agent_options = {
+          modes = { n = "gO" },
+          index = 21,
+          callback = "keymaps.agent_options",
+          description = "Change an effort or agent option",
+        },
+        changed_files = {
+          modes = { n = "gF" },
+          index = 22,
+          callback = "keymaps.changed_files",
+          description = "Review files changed by this chat",
+        },
         goto_file_under_cursor = {
           modes = { n = "gR" },
           index = 21,
@@ -814,6 +838,8 @@ If you are providing code changes, use the edit_file tool (if available to you) 
         save_dir = vim.fs.joinpath(vim.fn.stdpath("data") --[[@as string]], "codecompanion", "sessions"),
       },
       opts = {
+        composer_controls = true, -- Show model, agent options, and approval controls below the composer?
+        session_picker = true, -- Show available history when opening a fresh chat?
         context_management = {
           ---@type boolean|fun(adapter: CodeCompanion.HTTPAdapter|CodeCompanion.ACPAdapter): boolean
           enabled = true,

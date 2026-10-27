@@ -11,4 +11,9 @@ return {
   SESSION_UPDATE = "session/update",
   FS_READ_TEXT_FILE = "fs/read_text_file",
   FS_WRITE_TEXT_FILE = "fs/write_text_file",
+  TERMINAL_CREATE = "terminal/create",
+  TERMINAL_OUTPUT = "terminal/output",
+  TERMINAL_WAIT_FOR_EXIT = "terminal/wait_for_exit",
+  TERMINAL_KILL = "terminal/kill",
+  TERMINAL_RELEASE = "terminal/release",
 }

@@ -11,11 +11,13 @@ local M = {}
 local api = vim.api
 local fmt = string.format
 
----Establishes the connection, authenticates, creates a session and links the buffer.
+---Establishes the connection, authenticates, and optionally creates a session.
 ---@param chat CodeCompanion.Chat
 ---@param cb? function
+---@param opts? { defer_session?: boolean }
 ---@return nil
-function M.create_acp_connection(chat, cb)
+function M.create_acp_connection(chat, cb, opts)
+  opts = opts or {}
   ---Run async so as not to block the UI
   local async_utils = require("codecompanion.utils.async")
 
@@ -33,7 +35,9 @@ function M.create_acp_connection(chat, cb)
       return call_cb()
     end
 
-    handler:ensure_session()
+    if not opts.defer_session then
+      handler:ensure_session()
+    end
     call_cb()
   end)()
 end

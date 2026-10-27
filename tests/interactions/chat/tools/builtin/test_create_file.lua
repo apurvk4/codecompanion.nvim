@@ -80,6 +80,7 @@ T["fires FileEdited when a file is created"] = function()
     local tool = {
       {
         ["function"] = {
+          id = "call-create",
           name = "create_file",
           arguments = string.format('{"filepath": "%s", "content": "local x = 1"}', _G.TEST_TMPFILE_ABSOLUTE)
         },
@@ -96,6 +97,11 @@ T["fires FileEdited when a file is created"] = function()
   h.eq(1, #edits)
   h.eq(child.lua_get("_G.TEST_TMPFILE_ABSOLUTE"), edits[1].path)
   h.eq("create_file", edits[1].tool)
+  h.eq(1, edits[1].added)
+  h.eq(0, edits[1].removed)
+  h.eq("call-create", edits[1].tool_call_id)
+  h.eq(child.lua_get("chat.id"), edits[1].chat_id)
+  h.eq(child.lua_get("chat.bufnr"), edits[1].chat_bufnr)
 end
 
 return T
